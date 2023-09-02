@@ -1,5 +1,6 @@
 use axum::extract::Path;
 use axum::response::Result;
+use axum::Form;
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use sqlx::types::chrono::NaiveDate;
@@ -22,13 +23,14 @@ pub struct Candidate {
 pub async fn create_candidate(
     State(pool): State<PgPool>,
     Json(new_candidate): Json<Candidate>,
-) -> (StatusCode, Json<Candidate>) {
+) -> Result<Json<Candidate>> {
     let query = "INSERT INTO candidates (id, first_name, middle_name, last_name, birthdate, gender, college, category_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)";
 
     let parsed_birthdate =
         sqlx::types::chrono::NaiveDate::parse_from_str(&new_candidate.birthdate, "%Y-%m-%d")
             .expect("Date is invalid.");
 
+    // NOTE: Make id auto-increment
     sqlx::query(query)
         .bind(&new_candidate.id)
         .bind(&new_candidate.first_name)
@@ -40,48 +42,9 @@ pub async fn create_candidate(
         .bind(&new_candidate.category_id)
         .execute(&(pool))
         .await
-        .unwrap();
+        .expect("Failed to insert candidate.");
 
-    (StatusCode::CREATED, Json(new_candidate))
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CandidateScore {
-    id: String,
-    score: i32,
-    max: i32,
-    time_of_scoring: String,
-    // Relationships
-    candidate_id: i32,
-    criteria_id: String,
-    judge_id: String,
-}
-
-pub async fn submit_score(
-    State(pool): State<PgPool>,
-    Json(score): Json<CandidateScore>,
-) -> (StatusCode, Json<CandidateScore>) {
-    let query = "INSERT INTO scores (id, score, max, time_of_scoring, candidate_id, criteria_id, judge_id) VALUES ($1, $2, $3, $4, $5, $6, $7)";
-
-    let parsed_time_of_scoring = sqlx::types::chrono::DateTime::parse_from_str(
-        &score.time_of_scoring,
-        "%Y-%m-%d %H:%M:%S %z",
-    )
-    .expect("Date and time is invalid.");
-
-    sqlx::query(query)
-        .bind(&score.id)
-        .bind(&score.score)
-        .bind(&score.max)
-        .bind(parsed_time_of_scoring)
-        .bind(&score.candidate_id)
-        .bind(&score.criteria_id)
-        .bind(&score.judge_id)
-        .execute(&(pool))
-        .await
-        .unwrap();
-
-    (StatusCode::OK, Json(score))
+    Ok(Json(new_candidate))
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -96,8 +59,8 @@ pub struct CandidateNote {
 
 pub async fn create_note(
     State(pool): State<PgPool>,
-    Json(new_note): Json<CandidateNote>,
-) -> (StatusCode, Json<CandidateNote>) {
+    Form(new_note): Form<CandidateNote>,
+) -> Result<Json<CandidateNote>> {
     let query = "INSERT INTO notes (id, note, last_change, candidate_id, judge_id) VALUES ($1, $2, $3, $4, $5)";
 
     let parsed_last_change_date = sqlx::types::chrono::DateTime::parse_from_str(
@@ -114,9 +77,9 @@ pub async fn create_note(
         .bind(&new_note.judge_id)
         .execute(&(pool))
         .await
-        .unwrap();
+        .expect("Failed to create note.");
 
-    (StatusCode::CREATED, Json(new_note))
+    Ok(Json(new_note))
 }
 
 // GET
@@ -160,7 +123,7 @@ pub async fn get_candidate(
     let query = sqlx::query(q);
 
     let row = query
-        .bind(candidate_id)
+        .bind(&candidate_id)
         .fetch_one(&(pool))
         .await
         .expect("Failed to fetch candidate, check if the candidate exists.");

@@ -16,10 +16,10 @@ use std::{env, io, net::SocketAddr};
 mod error;
 mod web;
 
-use web::{auth, candidate, category, criteria, event, judge};
+use web::{auth, candidate, category, criteria, event, judge, score};
 
-// NOTE: will use .unwrap() for now for most error handling situations, might change to a much
-// better way of handling errors when polishing
+// NOTE: will use .unwrap() or .expect() for now for most error handling situations, might change to a much
+// better way of handling errors when polishing (if possible)
 
 #[tokio::main]
 async fn main() {
@@ -40,6 +40,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(hello_world))
         .route("/login", post(auth::login))
+        .route("/logout", post(auth::logout))
         // Events
         .route("/events", post(event::create_event).get(event::get_events))
         .route("/events/:event_id", get(event::get_event))
@@ -55,14 +56,29 @@ async fn main() {
         // Judges
         .route("/judges", post(judge::create_judge))
         // Criterias
-        .route("/criterias", post(criteria::create_criteria))
+        .route(
+            "/events/:event_id/categories/:category_id/criterias",
+            post(criteria::create_criteria).get(criteria::get_criterias),
+        )
+        .route(
+            "/events/:event_id/categories/:category_id/criterias/:criteria_id",
+            get(criteria::get_criteria),
+        )
         // Candidates
         .route(
             "/candidates",
             post(candidate::create_candidate).get(candidate::get_candidates),
         )
         .route("/candidates/:candidate_id", get(candidate::get_candidate))
-        .route("/scores", post(candidate::submit_score))
+        .route(
+            "/candidates/:candidate_id/scores",
+            get(score::get_candidate_scores),
+        )
+        // .route(
+        //     "/candidates/:candidate_id/add_scores",
+        //     get(score::add_criteria_scores),
+        // )
+        .route("/scores", post(score::submit_score))
         .route("/notes", post(candidate::create_note))
         .with_state(pool);
 
@@ -73,7 +89,7 @@ async fn main() {
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
-        .unwrap();
+        .expect("Failed to start Axum server.");
 }
 
 async fn hello_world() -> &'static str {

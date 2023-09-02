@@ -11,6 +11,7 @@ use sqlx::{PgPool, Row};
 pub struct Category {
     id: String,
     name: String,
+    weight: f32,
     // Relationships
     event_id: String,
 }
@@ -21,11 +22,12 @@ pub async fn create_category(
     Path(event_id): Path<String>,
     Json(new_category): Json<Category>,
 ) -> Result<Json<Category>> {
-    let query = "INSERT INTO categories (id, name, event_id) VALUES ($1, $2, $3)";
+    let query = "INSERT INTO categories (id, name, weight, event_id) VALUES ($1, $2, $3, $4)";
 
     sqlx::query(query)
         .bind(&new_category.id)
         .bind(&new_category.name)
+        .bind(&new_category.weight)
         .bind(event_id)
         .execute(&(pool))
         .await
@@ -54,6 +56,7 @@ pub async fn get_categories(
             let category = Category {
                 id: row.get("id"),
                 name: row.get("name"),
+                weight: row.get("weight"),
                 event_id: row.get("event_id"),
             };
 
@@ -81,6 +84,7 @@ pub async fn get_category(
     let category = Category {
         id: row.get("id"),
         name: row.get("name"),
+        weight: row.get("weight"),
         event_id: row.get("event_id"),
     };
 

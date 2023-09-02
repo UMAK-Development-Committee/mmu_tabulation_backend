@@ -1,4 +1,5 @@
 use axum::response::Result;
+use axum::Form;
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -6,13 +7,13 @@ use sqlx::{PgPool, Row};
 
 use crate::web::judge::Judge;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub struct User {
     name: String,
     password: String,
 }
 
-pub async fn login(State(pool): State<PgPool>, Json(user): Json<User>) -> Result<Json<Value>> {
+pub async fn login(State(pool): State<PgPool>, Form(user): Form<User>) -> Result<Json<Value>> {
     let q = "SELECT * FROM judges WHERE name = ($1) AND password = ($2)";
     let query = sqlx::query(q);
 
@@ -32,7 +33,7 @@ pub async fn login(State(pool): State<PgPool>, Json(user): Json<User>) -> Result
         .bind(judge_id)
         .execute(&(pool))
         .await
-        .expect("Failed to update is_active value");
+        .expect("Failed to update is_active value to TRUE.");
 
     println!("Welcome, {}!", user.name);
 
@@ -45,7 +46,28 @@ pub async fn login(State(pool): State<PgPool>, Json(user): Json<User>) -> Result
     Ok(body)
 }
 
-pub async fn logout(State(pool): State<PgPool>) {
-    // Set is_active to FALSE
-    todo!()
+#[derive(Debug, Deserialize)]
+pub struct LogOut {
+    user_id: String,
+}
+
+pub async fn logout(State(pool): State<PgPool>, Form(logout): Form<LogOut>) -> Result<Json<Value>> {
+    let q = "UPDATE judges SET is_active = FALSE WHERE id = ($1)";
+    let query = sqlx::query(q);
+
+    query
+        .bind(&logout.user_id)
+        .execute(&(pool))
+        .await
+        .expect("Failed to update is_active to FALSE.");
+
+    println!("Goodbye!");
+
+    let body = Json(json!({
+        "result": {
+            "success": true
+        }
+    }));
+
+    Ok(body)
 }
