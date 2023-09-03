@@ -1,3 +1,4 @@
+use axum::response::Result;
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -15,7 +16,7 @@ pub struct Judge {
 pub async fn create_judge(
     State(pool): State<PgPool>,
     Json(new_judge): Json<Judge>,
-) -> (StatusCode, Json<Judge>) {
+) -> Result<Json<Judge>> {
     let query = "INSERT INTO judges (id, name, password, is_active, category_id) VALUES ($1, $2, $3, $4, $5)";
 
     sqlx::query(query)
@@ -26,7 +27,7 @@ pub async fn create_judge(
         .bind(&new_judge.category_id)
         .execute(&(pool))
         .await
-        .unwrap();
+        .expect("Failed to create new judge.");
 
-    (StatusCode::CREATED, Json(new_judge))
+    Ok(Json(new_judge))
 }

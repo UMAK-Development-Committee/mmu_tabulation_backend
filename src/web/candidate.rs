@@ -75,7 +75,7 @@ pub async fn create_note(
         .bind(parsed_last_change_date)
         .bind(&new_note.candidate_id)
         .bind(&new_note.judge_id)
-        .execute(&(pool))
+        .execute(&pool)
         .await
         .expect("Failed to create note.");
 
