@@ -23,24 +23,26 @@ pub async fn create_criteria(
     State(pool): State<PgPool>,
     Json(new_criteria): Json<Criteria>,
 ) -> Result<Json<Criteria>> {
-    let query = "INSERT INTO criterias (id, name, description, max_score, weight, category_id) VALUES ($1, $2, $3, $4, $5, $6)";
-
-    sqlx::query(query)
-        .bind(&new_criteria.id)
-        .bind(&new_criteria.name)
-        .bind(&new_criteria.description)
-        .bind(&new_criteria.max_score)
-        .bind(&new_criteria.weight)
-        .bind(&new_criteria.category_id)
-        .execute(&(pool))
-        .await
-        .unwrap();
+    let res = sqlx::query(
+        r#"
+        INSERT INTO criterias (id, name, description, max_score, weight, category_id) 
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(&new_criteria.id)
+    .bind(&new_criteria.name)
+    .bind(&new_criteria.description)
+    .bind(&new_criteria.max_score)
+    .bind(&new_criteria.weight)
+    .bind(&new_criteria.category_id)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     Ok(Json(new_criteria))
 }
 
 // GET
-
 pub async fn get_criterias(
     State(pool): State<PgPool>,
     Path((_event_id, category_id)): Path<(String, String)>,
@@ -49,7 +51,7 @@ pub async fn get_criterias(
 
     let rows = sqlx::query(q)
         .bind(&category_id)
-        .fetch_all(&(pool))
+        .fetch_all(&pool)
         .await
         .expect("Failed to fetch criteria, check if it exists.");
 

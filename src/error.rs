@@ -1,4 +1,5 @@
 // NOTE: Not sure if I need this module, will leave it here for now just in case I need custom Errors
+// Might use anyhow instead
 
 // Remove some noise
 #![allow(unused)]

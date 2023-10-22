@@ -1,12 +1,13 @@
 // Ignore unused imports for now to remove some noise
 #![allow(unused_imports)]
 
+use anyhow::Context;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         ConnectInfo, Form, State,
     },
-    http::{HeaderValue, Method, StatusCode},
+    http,
     response::{IntoResponse, Response},
     routing::{get, post},
     Extension, Json, Router,
@@ -28,69 +29,38 @@ use tower_http::cors::CorsLayer;
 mod error;
 mod web;
 
-use web::{auth, candidate, category, criteria, event, judge, score};
+use web::{auth, candidate, category, criteria, event, judge, note, score};
 
-// NOTE: will use .unwrap() or .expect() for now for most error handling situations, might change to a much
-// better way of handling errors when polishing (if possible)
-
-// Our shared state
 struct AppState {
     // Idk if we need to track the judges
-    user_set: Mutex<HashSet<String>>,
+    // user_set: Mutex<HashSet<String>>,
     // Channel used to send messages to all connected clients.
     tx: broadcast::Sender<String>,
 }
 
-// TODO: Add Postgres listener
-
 #[tokio::main]
-async fn main() {
-    // Not sure if this is needed, will comment for now
-    // initialize tracing
-    // tracing_subscriber::fmt::init();
-
+async fn main() -> anyhow::Result<(), anyhow::Error> {
     dotenv().ok();
 
-    let user_set = Mutex::new(HashSet::new());
     let (tx, _rx) = broadcast::channel(100);
 
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL env not found.");
-    let pool = sqlx::postgres::PgPool::connect(&db_url)
-        .await
-        .expect("Can't connect to database.");
-    let mut pg_listener = PgListener::connect_with(&pool)
-        .await
-        .expect("Can't connect with listener.");
+    let pool = sqlx::postgres::PgPool::connect(&db_url).await?;
+    let mut pg_listener = PgListener::connect_with(&pool).await?;
 
-    pg_listener.listen_all(vec!["updates"]).await.unwrap();
+    pg_listener.listen_all(vec!["updates"]).await?;
 
-    let app_state = Arc::new(AppState { user_set, tx });
-    let app_state_clone = Arc::clone(&app_state);
+    let app_state = Arc::new(AppState { tx });
 
     println!("\nNow listening to Postgres...\n");
 
-    // WEB SOCKET (with db)
-    // When something happens to the database, send it to the websocket for the frontend to be updated in real time
-    tokio::spawn(async move {
-        loop {
-            while let Some(notification) = pg_listener.try_recv().await.unwrap() {
-                let payload = notification.payload();
-                app_state_clone.tx.send(payload.to_string()).unwrap();
+    db_ws_listen(pg_listener, app_state.clone());
 
-                println!("Notification 8000: {payload:?}\n");
-            }
-
-            println!("Connection to Postgres lost.");
-        }
-    });
-
-    // TODO: improve the way the routes are setup if possible
     let app = Router::new()
-        // WEB SOCKET (without db)
+        // WebSocket
         .route("/ws", get(ws_handler))
         .with_state(app_state)
-        .route("/", get(hello_world))
-        // CRUD routes
+        .route("/", get(health))
         // Auth
         .route("/login", post(auth::login))
         .route("/logout", post(auth::logout))
@@ -128,27 +98,53 @@ async fn main() {
         // Judges
         .route("/judges", post(judge::create_judge))
         .route("/scores", post(score::submit_score))
-        .route("/notes", post(candidate::create_note))
+        .route("/notes", post(note::create_note).get(note::get_note))
         .layer(
             CorsLayer::new()
-                .allow_origin("*".parse::<HeaderValue>().unwrap())
-                .allow_methods([Method::GET, Method::POST]),
+                .allow_origin("*".parse::<http::HeaderValue>()?)
+                .allow_methods([http::Method::GET, http::Method::POST]),
         )
         .with_state(pool);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8000));
 
     println!("Server has started, listening on: {}\n", addr);
-    // tracing::debug!("Listening on: {}", addr);
 
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
-        .await
-        .expect("Failed to start Axum server.");
+        .await?;
+
+    Ok(())
 }
 
-async fn hello_world() -> &'static str {
-    "Hello, World!"
+async fn health() -> (http::StatusCode, String) {
+    (http::StatusCode::OK, "Hello, World!".to_string())
+}
+
+// Listen to the database in real-time and send the notification to the websocket
+fn db_ws_listen(mut pg_listener: PgListener, app_state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            while let Some(notification) = pg_listener
+                .try_recv()
+                .await
+                .context("Failed to receive notification.")
+                .unwrap()
+            {
+                let payload = notification.payload();
+
+                app_state
+                    .tx
+                    .send(payload.to_string())
+                    .context("Failed to send payload")
+                    .unwrap();
+
+                println!("Notification 8000: {payload:?}\n");
+            }
+
+            println!("Connection to Postgres lost.");
+        }
+    });
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
@@ -160,8 +156,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     let mut rx = state.tx.subscribe();
 
-    // Spawn the first task that will receive broadcast messages and send text
-    // messages over the websocket to our client.
+    // Spawn the first task that will receive broadcast messages and send text messages over the websocket to our client.
     let mut send_task = tokio::spawn(async move {
         while let Ok(msg) = rx.recv().await {
             if sender.send(Message::Text(msg)).await.is_err() {
@@ -175,7 +170,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     // Spawn a task that takes messages from the websocket and sends them to all broadcast subscribers.
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(Message::Text(text))) = receiver.next().await {
-            let _ = tx.send(format!("User: {}", text));
+            println!("{text}");
+            let _ = tx.send(format!("{}", text));
         }
     });
 
@@ -183,14 +179,4 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         _ = (&mut send_task) => recv_task.abort(),
         _ = (&mut recv_task) => send_task.abort(),
     };
-}
-
-fn check_username(state: &AppState, new_username: &mut String, name: &str) {
-    let mut user_set = state.user_set.lock().unwrap();
-
-    if !user_set.contains(name) {
-        user_set.insert(name.to_owned());
-
-        new_username.push_str(name);
-    }
 }
