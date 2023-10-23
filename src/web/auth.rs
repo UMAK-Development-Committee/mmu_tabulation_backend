@@ -16,32 +16,32 @@ pub struct User {
 pub async fn login(
     State(pool): State<PgPool>,
     axum::Json(user): axum::Json<User>,
-) -> Result<http::StatusCode, http::StatusCode> {
-    let q = "SELECT * FROM judges WHERE name = ($1) AND password = ($2)";
+) -> Result<axum::Json<Judge>, http::StatusCode> {
+    let res =
+        sqlx::query_as::<_, Judge>("SELECT * FROM judges WHERE name = ($1) AND password = ($2)")
+            .bind(&user.name)
+            .bind(&user.password)
+            .fetch_one(&pool)
+            .await;
 
-    let res = sqlx::query(q)
-        .bind(&user.name)
-        .bind(&user.password)
-        .fetch_one(&pool);
-
-    match res.await {
-        Ok(row) => {
-            let judge_id: String = row.get("id");
-
-            let auth_query = "UPDATE judges SET is_active = TRUE WHERE id = ($1)";
-
-            sqlx::query(auth_query)
-                .bind(&judge_id)
+    match res {
+        Ok(judge) => {
+            sqlx::query("UPDATE judges SET is_active = TRUE WHERE id = ($1)")
+                .bind(&judge.id)
                 .execute(&pool)
                 .await
-                .expect("Failed to update is_active value to TRUE.");
+                .map_err(|_| {
+                    eprintln!("Failed to set is_active to TRUE");
+                    http::StatusCode::INTERNAL_SERVER_ERROR
+                })?;
 
-            println!("Welcome, {}!", user.name);
+            println!("Welcome, {}!", judge.name);
+            println!("Details: {:?}\n", judge);
 
-            Ok(http::StatusCode::OK)
+            Ok(axum::Json(judge))
         }
         Err(err) => {
-            eprintln!("User doesn't exist: {err:?}");
+            eprintln!("Failed to login: {err:?}");
 
             Err(http::StatusCode::INTERNAL_SERVER_ERROR)
         }

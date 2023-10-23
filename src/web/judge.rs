@@ -5,12 +5,12 @@ use sqlx::{FromRow, PgPool};
 
 #[derive(Debug, Serialize, FromRow)]
 pub struct Judge {
-    id: uuid::Uuid,
-    name: String,
-    password: String,
-    is_active: bool,
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub password: String,
+    pub is_active: bool,
     // Relationships
-    category_id: uuid::Uuid,
+    pub category_id: uuid::Uuid,
 }
 
 impl Judge {
