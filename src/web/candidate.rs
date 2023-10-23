@@ -16,32 +16,24 @@ pub struct Candidate {
     gender: i32,
     college: String,
     // Relationships
-    category_id: String,
+    category_id: uuid::Uuid,
 }
 
 impl Candidate {
-    fn new(
-        first_name: String,
-        middle_name: String,
-        last_name: String,
-        birthdate: String,
-        gender: i32,
-        college: String,
-        category_id: String,
-    ) -> Self {
+    fn new(create: CreateCandidate) -> Self {
         let uuid = uuid::Uuid::new_v4();
-        let parsed_birthdate =
-            chrono::NaiveDate::parse_from_str(&birthdate, "%Y-%m-%d").expect("Date is invalid.");
+        let parsed_birthdate = chrono::NaiveDate::parse_from_str(&create.birthdate, "%Y-%m-%d")
+            .expect("Date is invalid.");
 
         Self {
             id: uuid,
-            first_name,
-            middle_name,
-            last_name,
+            first_name: create.first_name,
+            middle_name: create.middle_name,
+            last_name: create.last_name,
             birthdate: parsed_birthdate,
-            gender,
-            college,
-            category_id,
+            gender: create.gender,
+            college: create.college,
+            category_id: create.category_id,
         }
     }
 }
@@ -54,24 +46,14 @@ pub struct CreateCandidate {
     birthdate: String,
     gender: i32,
     college: String,
-    // Relationships
-    category_id: String,
+    category_id: uuid::Uuid,
 }
 
-// POST
 pub async fn create_candidate(
     State(pool): State<PgPool>,
     axum::Json(payload): axum::Json<CreateCandidate>,
 ) -> Result<(http::StatusCode, axum::Json<Candidate>), http::StatusCode> {
-    let candidate = Candidate::new(
-        payload.first_name,
-        payload.middle_name,
-        payload.last_name,
-        payload.birthdate,
-        payload.gender,
-        payload.college,
-        payload.category_id,
-    );
+    let candidate = Candidate::new(payload);
 
     let res = sqlx::query(
         r#"
@@ -99,13 +81,12 @@ pub async fn create_candidate(
     }
 }
 
-// GET
 pub async fn get_candidates(
     State(pool): State<PgPool>,
 ) -> Result<axum::Json<Vec<Candidate>>, http::StatusCode> {
-    let q = "SELECT * FROM candidates";
-
-    let res = sqlx::query_as::<_, Candidate>(q).fetch_all(&pool).await;
+    let res = sqlx::query_as::<_, Candidate>("SELECT * FROM candidates")
+        .fetch_all(&pool)
+        .await;
 
     match res {
         Ok(candidates) => Ok(axum::Json(candidates)),
@@ -118,11 +99,9 @@ pub async fn get_candidates(
 
 pub async fn get_candidate(
     State(pool): State<PgPool>,
-    Path(candidate_id): Path<i32>,
+    Path(candidate_id): Path<uuid::Uuid>,
 ) -> Result<axum::Json<Candidate>, http::StatusCode> {
-    let q = "SELECT * FROM candidates WHERE id = ($1)";
-
-    let res = sqlx::query_as::<_, Candidate>(q)
+    let res = sqlx::query_as::<_, Candidate>("SELECT * FROM candidates WHERE id = ($1)")
         .bind(&candidate_id)
         .fetch_one(&pool)
         .await;

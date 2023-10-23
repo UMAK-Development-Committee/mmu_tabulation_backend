@@ -3,7 +3,6 @@ use axum::http;
 use axum::response::Result;
 use axum::Form;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
 
 use crate::web::judge::Judge;
@@ -51,7 +50,7 @@ pub async fn login(
 
 #[derive(Debug, Deserialize)]
 pub struct LogOut {
-    user_id: String,
+    user_id: uuid::Uuid,
 }
 
 pub async fn logout(

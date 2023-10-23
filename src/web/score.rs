@@ -14,27 +14,21 @@ pub struct Score {
     time_of_scoring: chrono::DateTime<chrono::Utc>,
     // Relationships
     candidate_id: uuid::Uuid,
-    criteria_id: String,
-    judge_id: String,
+    criteria_id: uuid::Uuid,
+    judge_id: uuid::Uuid,
 }
 
 impl Score {
-    fn new(
-        score: i32,
-        max: i32,
-        candidate_id: uuid::Uuid,
-        criteria_id: String,
-        judge_id: String,
-    ) -> Self {
+    fn new(score: CreateScore) -> Self {
         let now = chrono::Utc::now();
         let uuid = uuid::Uuid::new_v4();
 
         Self {
-            criteria_id,
-            judge_id,
-            candidate_id,
-            max,
-            score,
+            criteria_id: score.criteria_id,
+            judge_id: score.judge_id,
+            candidate_id: score.candidate_id,
+            max: score.max,
+            score: score.score,
             time_of_scoring: now,
             id: uuid,
         }
@@ -46,8 +40,8 @@ pub struct CreateScore {
     score: i32,
     max: i32,
     candidate_id: uuid::Uuid,
-    criteria_id: String,
-    judge_id: String,
+    criteria_id: uuid::Uuid,
+    judge_id: uuid::Uuid,
 }
 
 // Submit score function for each individual judge
@@ -57,13 +51,7 @@ pub async fn submit_score(
 ) -> Result<(http::StatusCode, axum::Json<Score>), http::StatusCode> {
     let query = "INSERT INTO scores (id, score, max, time_of_scoring, candidate_id, criteria_id, judge_id) VALUES ($1, $2, $3, $4, $5, $6, $7)";
 
-    let score = Score::new(
-        payload.score,
-        payload.max,
-        payload.candidate_id,
-        payload.criteria_id,
-        payload.judge_id,
-    );
+    let score = Score::new(payload);
 
     let res = sqlx::query(query)
         .bind(&score.id)
@@ -87,15 +75,15 @@ pub async fn submit_score(
 
 #[derive(Debug, Deserialize)]
 pub struct ScoreQuery {
-    event_id: String,
-    category_id: String,
-    criteria_id: String,
+    event_id: uuid::Uuid,
+    category_id: uuid::Uuid,
+    criteria_id: uuid::Uuid,
 }
 
 // NOTE: Will only get the final score for ONE category only
 pub async fn get_candidate_scores(
     State(pool): State<PgPool>,
-    Path(candidate_id): Path<i32>,
+    Path(candidate_id): Path<uuid::Uuid>,
     Query(query): Query<ScoreQuery>,
 ) -> Result<axum::Json<Vec<Score>>, http::StatusCode> {
     let q = "SELECT * FROM scores WHERE candidate_id = ($1)";
@@ -127,7 +115,7 @@ pub async fn get_candidate_scores(
 // Formula: Summation of total category score * weight
 pub async fn get_category_score(
     State(pool): State<PgPool>,
-    Path(candidate_id): Path<i32>,
+    Path(candidate_id): Path<uuid::Uuid>,
     Query(category_query): Query<ScoreQuery>,
 ) -> Result<f32, http::StatusCode> {
     // May or may not be needed, not used yet

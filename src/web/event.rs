@@ -1,71 +1,85 @@
 use axum::extract::Path;
 use axum::response::Result;
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{extract::State, http};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
+use sqlx::{FromRow, PgPool, Row};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Serialize, FromRow)]
 pub struct Event {
-    id: String,
+    id: uuid::Uuid,
     name: String,
 }
 
-// POST
+impl Event {
+    fn new(create: CreateEvent) -> Self {
+        let uuid = uuid::Uuid::new_v4();
+
+        Self {
+            id: uuid,
+            name: create.name,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateEvent {
+    name: String,
+}
+
 pub async fn create_event(
     State(pool): State<PgPool>,
-    Json(new_event): Json<Event>,
-) -> Result<Json<Event>> {
-    let query = "INSERT INTO events (id, name) VALUES ($1, $2)";
+    axum::Json(payload): axum::Json<CreateEvent>,
+) -> Result<(http::StatusCode, axum::Json<Event>), http::StatusCode> {
+    let event = Event::new(payload);
 
-    sqlx::query(query)
-        .bind(&new_event.id)
-        .bind(&new_event.name)
-        .execute(&(pool))
-        .await
-        .expect("Failed to insert event.");
+    let res = sqlx::query("INSERT INTO events (id, name) VALUES ($1, $2)")
+        .bind(&event.id)
+        .bind(&event.name)
+        .execute(&pool)
+        .await;
 
-    Ok(Json(new_event))
+    match res {
+        Ok(_) => Ok((http::StatusCode::CREATED, axum::Json(event))),
+        Err(err) => {
+            eprintln!("Failed to create event: {err:?}");
+
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
-// GET
-pub async fn get_events(State(pool): State<PgPool>) -> Result<Json<Vec<Event>>> {
-    let q = "SELECT * FROM events";
-    let query = sqlx::query(q);
+pub async fn get_events(
+    State(pool): State<PgPool>,
+) -> Result<axum::Json<Vec<Event>>, http::StatusCode> {
+    let res = sqlx::query_as::<_, Event>("SELECT * FROM events")
+        .fetch_all(&pool)
+        .await;
 
-    let rows = query
-        .fetch_all(&(pool))
-        .await
-        .expect("Failed to fetch list of events.");
+    match res {
+        Ok(events) => Ok(axum::Json(events)),
+        Err(err) => {
+            eprintln!("Failed to get events: {err:?}");
 
-    let events: Vec<Event> = rows
-        .iter()
-        .map(|row| {
-            let event = Event {
-                id: row.get("id"),
-                name: row.get("name"),
-            };
-
-            event
-        })
-        .collect();
-
-    Ok(Json(events))
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
-pub async fn get_event(State(pool): State<PgPool>, Path(id): Path<String>) -> Result<Json<Event>> {
-    let q = "SELECT * FROM events WHERE id = ($1)";
-    let query = sqlx::query(q);
+pub async fn get_event(
+    State(pool): State<PgPool>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<axum::Json<Event>, http::StatusCode> {
+    let res = sqlx::query_as::<_, Event>("SELECT * FROM events WHERE id = ($1)")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await;
 
-    let row = query
-        .bind(id)
-        .fetch_one(&(pool))
-        .await
-        .expect("Failed to fetch event row, check if the row exists.");
+    match res {
+        Ok(event) => Ok(axum::Json(event)),
+        Err(err) => {
+            eprintln!("Failed to get event: {err:?}");
 
-    let event = Event {
-        id: row.get("id"),
-        name: row.get("name"),
-    };
-
-    Ok(Json(event))
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }

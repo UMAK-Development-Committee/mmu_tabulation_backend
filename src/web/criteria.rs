@@ -1,100 +1,116 @@
 use axum::response::Result;
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
-    Json,
+    http,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
+use sqlx::{FromRow, PgPool, Row};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Serialize, FromRow)]
 pub struct Criteria {
-    id: String,
+    id: uuid::Uuid,
     name: String,
     description: String,
     max_score: i32,
     weight: f64,
     // Relationships
-    category_id: String,
+    category_id: uuid::Uuid,
+}
+
+impl Criteria {
+    fn new(create: CreateCriteria) -> Self {
+        let uuid = uuid::Uuid::new_v4();
+
+        Self {
+            category_id: create.category_id,
+            weight: create.weight,
+            max_score: create.max_score,
+            name: create.name,
+            description: create.description,
+            id: uuid,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateCriteria {
+    name: String,
+    description: String,
+    max_score: i32,
+    weight: f64,
+    category_id: uuid::Uuid,
 }
 
 // POST
 pub async fn create_criteria(
     State(pool): State<PgPool>,
-    Json(new_criteria): Json<Criteria>,
-) -> Result<Json<Criteria>> {
+    axum::Json(payload): axum::Json<CreateCriteria>,
+) -> Result<(http::StatusCode, axum::Json<Criteria>), http::StatusCode> {
+    let criteria = Criteria::new(payload);
+
     let res = sqlx::query(
         r#"
         INSERT INTO criterias (id, name, description, max_score, weight, category_id) 
         VALUES ($1, $2, $3, $4, $5, $6)
         "#,
     )
-    .bind(&new_criteria.id)
-    .bind(&new_criteria.name)
-    .bind(&new_criteria.description)
-    .bind(&new_criteria.max_score)
-    .bind(&new_criteria.weight)
-    .bind(&new_criteria.category_id)
+    .bind(&criteria.id)
+    .bind(&criteria.name)
+    .bind(&criteria.description)
+    .bind(&criteria.max_score)
+    .bind(&criteria.weight)
+    .bind(&criteria.category_id)
     .execute(&pool)
-    .await
-    .unwrap();
+    .await;
 
-    Ok(Json(new_criteria))
+    match res {
+        Ok(_) => Ok((http::StatusCode::CREATED, axum::Json(criteria))),
+        Err(err) => {
+            eprintln!("Failed to create criteria: {err:?}");
+
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 // GET
 pub async fn get_criterias(
     State(pool): State<PgPool>,
-    Path((_event_id, category_id)): Path<(String, String)>,
-) -> Result<Json<Vec<Criteria>>> {
-    let q = "SELECT * FROM criterias WHERE category_id = ($1)";
-
-    let rows = sqlx::query(q)
+    Path((_event_id, category_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+) -> Result<axum::Json<Vec<Criteria>>, http::StatusCode> {
+    let res = sqlx::query_as::<_, Criteria>("SELECT * FROM criterias WHERE category_id = ($1)")
         .bind(&category_id)
         .fetch_all(&pool)
-        .await
-        .expect("Failed to fetch criteria, check if it exists.");
+        .await;
 
-    let criterias: Vec<Criteria> = rows
-        .iter()
-        .map(|row| {
-            let criteria = Criteria {
-                id: row.get("id"),
-                name: row.get("name"),
-                description: row.get("description"),
-                max_score: row.get("max_score"),
-                weight: row.get("weight"),
-                category_id: row.get("category_id"),
-            };
+    match res {
+        Ok(criterias) => Ok(axum::Json(criterias)),
+        Err(err) => {
+            eprintln!("Failed to get criterias: {err:?}");
 
-            criteria
-        })
-        .collect();
-
-    Ok(Json(criterias))
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 pub async fn get_criteria(
     State(pool): State<PgPool>,
-    Path((_event_id, category_id, criteria_id)): Path<(String, String, String)>,
-) -> Result<Json<Criteria>> {
-    let q = "SELECT * FROM criterias WHERE category_id = ($1) AND id = ($2)";
+    Path((_event_id, category_id, criteria_id)): Path<(uuid::Uuid, uuid::Uuid, uuid::Uuid)>,
+) -> Result<axum::Json<Criteria>, http::StatusCode> {
+    let res = sqlx::query_as::<_, Criteria>(
+        "SELECT * FROM criterias WHERE category_id = ($1) AND id = ($2)",
+    )
+    .bind(&category_id)
+    .bind(&criteria_id)
+    .fetch_one(&pool)
+    .await;
 
-    let row = sqlx::query(q)
-        .bind(&category_id)
-        .bind(&criteria_id)
-        .fetch_one(&(pool))
-        .await
-        .expect("Failed to fetch criteria, check if it exists.");
+    match res {
+        Ok(criteria) => Ok(axum::Json(criteria)),
+        Err(err) => {
+            eprintln!("Failed to get criteria: {err:?}");
 
-    let criteria = Criteria {
-        id: row.get("id"),
-        name: row.get("name"),
-        description: row.get("description"),
-        max_score: row.get("max_score"),
-        weight: row.get("weight"),
-        category_id: row.get("category_id"),
-    };
-
-    Ok(Json(criteria))
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }

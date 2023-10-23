@@ -13,18 +13,18 @@ pub struct Note {
     last_change: chrono::DateTime<chrono::Utc>,
     // Relationships
     candidate_id: uuid::Uuid,
-    judge_id: String,
+    judge_id: uuid::Uuid,
 }
 
 impl Note {
-    fn new(note: String, candidate_id: uuid::Uuid, judge_id: String) -> Self {
+    fn new(create: CreateNote) -> Self {
         let now = chrono::Utc::now();
         let uuid = uuid::Uuid::new_v4();
 
         Self {
-            judge_id,
-            candidate_id,
-            note,
+            judge_id: create.judge_id,
+            candidate_id: create.candidate_id,
+            note: create.note,
             id: uuid,
             last_change: now,
         }
@@ -35,7 +35,7 @@ impl Note {
 pub struct CreateNote {
     note: String,
     candidate_id: uuid::Uuid,
-    judge_id: String,
+    judge_id: uuid::Uuid,
 }
 
 pub async fn create_note(
@@ -44,7 +44,7 @@ pub async fn create_note(
 ) -> Result<(http::StatusCode, axum::Json<Note>), http::StatusCode> {
     let query = "INSERT INTO notes (id, note, last_change, candidate_id, judge_id) VALUES ($1, $2, $3, $4, $5)";
 
-    let note = Note::new(payload.note, payload.candidate_id, payload.judge_id);
+    let note = Note::new(payload);
 
     let res = sqlx::query(query)
         .bind(&note.id)

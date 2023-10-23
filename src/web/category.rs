@@ -1,92 +1,105 @@
-use axum::response::Result;
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
-    Json,
+    http,
+    response::Result,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
+use sqlx::{FromRow, PgPool};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Serialize, FromRow)]
 pub struct Category {
-    id: String,
+    id: uuid::Uuid,
     name: String,
     weight: f32,
     // Relationships
-    event_id: String,
+    event_id: uuid::Uuid,
 }
 
-// POST
+impl Category {
+    fn new(create: CreateCategory) -> Self {
+        let uuid = uuid::Uuid::new_v4();
+
+        Self {
+            id: uuid,
+            event_id: create.event_id,
+            weight: create.weight,
+            name: create.name,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateCategory {
+    name: String,
+    weight: f32,
+    event_id: uuid::Uuid,
+}
+
 pub async fn create_category(
     State(pool): State<PgPool>,
-    Path(event_id): Path<String>,
-    Json(new_category): Json<Category>,
-) -> Result<Json<Category>> {
-    let query = "INSERT INTO categories (id, name, weight, event_id) VALUES ($1, $2, $3, $4)";
+    Path(event_id): Path<uuid::Uuid>,
+    axum::Json(payload): axum::Json<CreateCategory>,
+) -> Result<(http::StatusCode, axum::Json<Category>), http::StatusCode> {
+    let category = Category::new(CreateCategory {
+        name: payload.name,
+        weight: payload.weight,
+        event_id,
+    });
 
-    sqlx::query(query)
-        .bind(&new_category.id)
-        .bind(&new_category.name)
-        .bind(&new_category.weight)
-        .bind(event_id)
-        .execute(&(pool))
-        .await
-        .expect("Failed to insert category.");
+    let res =
+        sqlx::query("INSERT INTO categories (id, name, weight, event_id) VALUES ($1, $2, $3, $4)")
+            .bind(&category.id)
+            .bind(&category.name)
+            .bind(&category.weight)
+            .bind(&event_id)
+            .execute(&pool)
+            .await;
 
-    Ok(Json(new_category))
+    match res {
+        Ok(_) => Ok((http::StatusCode::CREATED, axum::Json(category))),
+        Err(err) => {
+            eprintln!("Failed to create category: {err:?}");
+
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
-// GET
 pub async fn get_categories(
     State(pool): State<PgPool>,
-    Path(event_id): Path<String>,
-) -> Result<Json<Vec<Category>>> {
-    let q = "SELECT * FROM categories WHERE event_id = ($1)";
-    let query = sqlx::query(q);
+    Path(event_id): Path<uuid::Uuid>,
+) -> Result<axum::Json<Vec<Category>>, http::StatusCode> {
+    let res = sqlx::query_as::<_, Category>("SELECT * FROM categories WHERE event_id = ($1)")
+        .bind(&event_id)
+        .fetch_all(&pool)
+        .await;
 
-    let rows = query
-        .bind(event_id)
-        .fetch_all(&(pool))
-        .await
-        .expect("Failed to fetch list of categories.");
-
-    let categories: Vec<Category> = rows
-        .iter()
-        .map(|row| {
-            let category = Category {
-                id: row.get("id"),
-                name: row.get("name"),
-                weight: row.get("weight"),
-                event_id: row.get("event_id"),
-            };
-
-            category
-        })
-        .collect();
-
-    Ok(Json(categories))
+    match res {
+        Ok(categories) => Ok(axum::Json(categories)),
+        Err(err) => {
+            eprintln!("Failed to get categories: {err:?}");
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 pub async fn get_category(
     State(pool): State<PgPool>,
-    Path((event_id, category_id)): Path<(String, String)>,
-) -> Result<Json<Category>> {
-    let q = "SELECT * FROM categories WHERE event_id = ($1) AND id = ($2)";
-    let query = sqlx::query(q);
+    Path((event_id, category_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+) -> Result<axum::Json<Category>, http::StatusCode> {
+    let res = sqlx::query_as::<_, Category>(
+        "SELECT * FROM categories WHERE event_id = ($1) AND id = ($2)",
+    )
+    .bind(event_id)
+    .bind(category_id)
+    .fetch_one(&pool)
+    .await;
 
-    let row = query
-        .bind(event_id)
-        .bind(category_id)
-        .fetch_one(&(pool))
-        .await
-        .expect("Failed to fetch category row, check if the row exists.");
-
-    let category = Category {
-        id: row.get("id"),
-        name: row.get("name"),
-        weight: row.get("weight"),
-        event_id: row.get("event_id"),
-    };
-
-    Ok(Json(category))
+    match res {
+        Ok(category) => Ok(axum::Json(category)),
+        Err(err) => {
+            eprintln!("Failed to get categories: {err:?}");
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
