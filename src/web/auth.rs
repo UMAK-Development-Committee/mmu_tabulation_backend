@@ -56,16 +56,22 @@ pub struct LogOut {
 pub async fn logout(
     State(pool): State<PgPool>,
     axum::Json(logout): axum::Json<LogOut>,
-) -> Result<http::StatusCode> {
-    let q = "UPDATE judges SET is_active = FALSE WHERE id = ($1)";
-
-    sqlx::query(q)
+) -> Result<http::StatusCode, http::StatusCode> {
+    let res = sqlx::query("UPDATE judges SET is_active = FALSE WHERE id = ($1)")
         .bind(&logout.user_id)
         .execute(&pool)
-        .await
-        .expect("Failed to update is_active to FALSE.");
+        .await;
 
-    println!("Goodbye!");
+    match res {
+        Ok(_) => {
+            println!("Goodbye!");
 
-    Ok(http::StatusCode::OK)
+            Ok(http::StatusCode::OK)
+        }
+        Err(err) => {
+            eprintln!("Failed to logout: {err:?}");
+
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }

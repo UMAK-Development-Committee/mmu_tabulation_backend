@@ -91,13 +91,16 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
             post(candidate::create_candidate).get(candidate::get_candidates),
         )
         .route("/candidates/:candidate_id", get(candidate::get_candidate))
-        .route(
-            "/candidates/:candidate_id/scores",
-            get(score::get_candidate_scores),
-        )
+        // .route(
+        //     "/candidates/:candidate_id/scores",
+        //     get(score::get_criteria_scores_sum),
+        // )
         // Judges
-        .route("/judges", post(judge::create_judge))
-        .route("/scores", post(score::submit_score))
+        .route("/judges", post(judge::create_judge).get(judge::get_judges))
+        .route(
+            "/scores",
+            post(score::submit_score).get(score::get_criteria_scores_sum),
+        )
         .route("/notes", post(note::create_note).get(note::get_note))
         .layer(
             CorsLayer::new()
