@@ -42,21 +42,21 @@ pub async fn create_note(
     State(pool): State<PgPool>,
     axum::Json(payload): axum::Json<CreateNote>,
 ) -> Result<(http::StatusCode, axum::Json<Note>), http::StatusCode> {
-    let query = "INSERT INTO notes (id, note, last_change, candidate_id, judge_id) VALUES ($1, $2, $3, $4, $5)";
-
-    let note = Note::new(payload);
-
-    let res = sqlx::query(query)
-        .bind(&note.id)
-        .bind(&note.note)
-        .bind(&note.last_change)
-        .bind(&note.candidate_id)
-        .bind(&note.judge_id)
-        .execute(&pool)
-        .await;
+    let res = sqlx::query_as::<_, Note>(
+        r#"
+        INSERT INTO notes (note, candidate_id, judge_id) 
+        VALUES ($1, $2, $3)
+        RETURNING *
+        "#,
+    )
+    .bind(&payload.note)
+    .bind(&payload.candidate_id)
+    .bind(&payload.judge_id)
+    .fetch_one(&pool)
+    .await;
 
     match res {
-        Ok(_) => Ok((http::StatusCode::CREATED, axum::Json(note))),
+        Ok(note) => Ok((http::StatusCode::CREATED, axum::Json(note))),
         Err(err) => {
             eprintln!("Failed to create note: {err:?}");
 
