@@ -1,28 +1,21 @@
 // Ignore unused imports for now to remove some noise
-#![allow(unused_imports)]
+// #![allow(unused_imports)]
 
 use anyhow::Context;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        ConnectInfo, Form, State,
+        State,
     },
     http,
-    response::{IntoResponse, Response},
+    response::Response,
     routing::{get, post},
-    Extension, Json, Router,
+    Router,
 };
 use dotenv::dotenv;
 use futures::{sink::SinkExt, stream::StreamExt};
-use serde::{Deserialize, Serialize};
-use sqlx::{postgres::PgListener, PgPool};
-use std::{
-    collections::HashSet,
-    env, io,
-    net::SocketAddr,
-    ops::ControlFlow,
-    sync::{Arc, Mutex},
-};
+use sqlx::postgres::PgListener;
+use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 
@@ -32,8 +25,6 @@ mod web;
 use web::{auth, candidate, category, criteria, event, judge, note, score};
 
 struct AppState {
-    // Idk if we need to track the judges
-    // user_set: Mutex<HashSet<String>>,
     // Channel used to send messages to all connected clients.
     tx: broadcast::Sender<String>,
 }
@@ -44,11 +35,18 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
 
     let (tx, _rx) = broadcast::channel(100);
 
-    let db_url = env::var("DATABASE_URL").expect("DATABASE_URL env not found.");
-    let pool = sqlx::postgres::PgPool::connect(&db_url).await?;
-    let mut pg_listener = PgListener::connect_with(&pool).await?;
+    let db_url = env::var("DATABASE_URL").context("DATABASE_URL env not found.")?;
+    let pool = sqlx::postgres::PgPool::connect(&db_url)
+        .await
+        .context("Couldn't connect to Postgres.")?;
+    let mut pg_listener = PgListener::connect_with(&pool)
+        .await
+        .context("Couldn't listen to pool.")?;
 
-    pg_listener.listen_all(vec!["updates"]).await?;
+    pg_listener
+        .listen_all(vec!["updates"])
+        .await
+        .context("Couldn't listen to channel.")?;
 
     let app_state = Arc::new(AppState { tx });
 
@@ -91,15 +89,10 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
             post(candidate::create_candidate).get(candidate::get_candidates),
         )
         .route("/candidates/:candidate_id", get(candidate::get_candidate))
-        // .route(
-        //     "/candidates/:candidate_id/scores",
-        //     get(score::get_criteria_scores_sum),
-        // )
-        // Judges
         .route("/judges", post(judge::create_judge).get(judge::get_judges))
         .route(
             "/scores",
-            post(score::submit_score).get(score::get_criteria_scores_sum),
+            post(score::submit_score).get(score::get_candidate_scores),
         )
         .route("/notes", post(note::create_note).get(note::get_note))
         .layer(

@@ -81,7 +81,13 @@ pub async fn submit_score(
 pub struct ScoreQuery {
     candidate_id: uuid::Uuid,
     category_id: uuid::Uuid,
+    event_id: uuid::Uuid,
 }
+
+// TODO:
+// Get all candidates for the current event
+// Compute the scores of each candidate
+// Return the final scores of each candidate
 
 // NOTE: Will only get the final score for ONE category only
 pub async fn get_candidate_scores(
@@ -95,14 +101,14 @@ pub async fn get_candidate_scores(
         .fetch_all(&pool)
         .await;
 
-    get_criteria_scores_sum(State(pool), Query(query))
+    get_candidate_score(State(pool), Query(query))
         .await
-        .expect("Failed to add criteria scores.");
+        .expect("Failed to get compute candidate score.");
 
     match res {
         Ok(scores) => {
             // let final_category_score =
-            //     get_criteria_scores_sum(State(pool), Path(candidate_id), Query(query))
+            //     get_candidate_score(State(pool), Path(candidate_id), Query(query))
             //         .await
             //         .expect("Failed to add criteria scores.");
 
@@ -117,67 +123,95 @@ pub async fn get_candidate_scores(
     }
 }
 
-// NOTE:
-// Formula: Summation of total category score * weight
-pub async fn get_criteria_scores_sum(
+#[derive(Debug, Deserialize, FromRow)]
+pub struct CategoryWeight {
+    id: uuid::Uuid,
+    weight: f32,
+}
+
+pub async fn get_candidate_score(
     State(pool): State<PgPool>,
     Query(query): Query<ScoreQuery>,
-) -> Result<http::StatusCode, http::StatusCode> {
-    // May or may not be needed, not used yet
-    // let category_count = sqlx::query_scalar::<_, i64>(
-    //     "SELECT COUNT(*) AS category_count FROM categories WHERE event_id = ($1)",
-    // )
-    // .bind(&category_query.event_id)
-    // .fetch_one(&pool)
-    // .await
-    // .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<f32, http::StatusCode> {
+    let category_weights: Vec<CategoryWeight> = sqlx::query_as::<_, CategoryWeight>(
+        "SELECT id, weight FROM categories WHERE event_id = ($1)",
+    )
+    .bind(&query.event_id)
+    .fetch_all(&pool)
+    .await
+    .context("Failed to fetch category weights")
+    .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // println!("Category count: {category_count}\n");
+    let mut weighted_scores = Vec::with_capacity(category_weights.len());
+    let mut weights = Vec::with_capacity(category_weights.len());
 
-    // Get category weight
-    // let category_weight = sqlx::query_scalar::<_, f32>(
-    //     "SELECT weight from categories WHERE event_id = ($1) AND id = ($2)",
-    // )
-    // .bind(&query.event_id)
-    // .bind(&query.category_id)
-    // .fetch_one(&pool)
-    // .await
-    // .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
-    //
-    // // Get the scores for each criteria on each category
-    // // NOTE: do we need to display each criteria scores? Removing the last part of this query
-    // // (s.criteria_id = ($3)) will make it so that it will just get all the scores from all judges immediately
-    //
-    // let judge_scores_on_criteria = sqlx::query_scalar::<_, i32>(
-    //     r#"
-    //      SELECT s.score, s.judge_id FROM scores s JOIN criterias c ON s.criteria_id = c.id
-    //      WHERE s.candidate_id = ($1) AND c.category_id = ($2) AND s.criteria_id = ($3)
-    //      "#,
-    // )
-    // .bind(&candidate_id)
-    // .bind(&query.category_id)
-    // .bind(&query.criteria_id)
-    // .fetch_all(&pool)
-    // .await
-    // .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
-    //
-    // let criteria_score: i32 = judge_scores_on_criteria.iter().sum();
-    //
-    // println!("\nCriteria Score: {criteria_score}");
-    // println!("Category Weight: {category_weight}\n");
+    for (i, category) in category_weights.iter().enumerate() {
+        let category_scores =
+            sqlx::query_scalar::<_, i32>("SELECT score FROM scores WHERE category_id = ($1)")
+                .bind(category.id)
+                .fetch_all(&pool)
+                .await
+                .context(format!("Failed to fetch scores for category {}", i + 1))
+                .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // let final_category_score = (criteria_score as f32) * category_weight;
+        let total_score: i32 = category_scores.iter().sum();
+        let weighted_score = (total_score as f32) * category.weight;
 
-    let category_scores =
-        sqlx::query_scalar::<_, i32>("SELECT score FROM scores WHERE category_id = ($1)")
-            .bind(&query.category_id)
-            .fetch_all(&pool)
-            .await
-            .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        println!("Category {} Scores: {:?}", i + 1, category_scores);
+        println!("Category {} Total Score: {}", i + 1, total_score);
+        println!("Category {} Weight: {}", i + 1, category.weight);
+        println!("Category {} Weighted Score: {}\n", i + 1, weighted_score);
 
-    let test: i32 = category_scores.iter().sum();
+        weighted_scores.push(weighted_score);
+        weights.push(category.weight);
+    }
 
-    println!("Category Score: {test}");
+    println!("Weighted Scores: {weighted_scores:?}");
 
-    Ok(http::StatusCode::OK)
+    let weighted_scores_sum: f32 = weighted_scores.iter().sum();
+    let weights_sum: f32 = weights.iter().sum();
+    let final_score = weighted_scores_sum / weights_sum;
+
+    println!("Sum of Weighted Scores: {weighted_scores_sum}");
+    println!("Sum of Category Weights: {weights_sum}\n");
+    println!("Final Score: {final_score}");
+
+    Ok(final_score)
 }
+
+// Old code
+// May or may not be needed, not used yet
+// let category_count = sqlx::query_scalar::<_, i64>(
+//     "SELECT COUNT(*) AS category_count FROM categories WHERE event_id = ($1)",
+// )
+// .bind(&category_query.event_id)
+// .fetch_one(&pool)
+// .await
+// .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+// println!("Category count: {category_count}\n");
+
+//
+// // Get the scores for each criteria on each category
+// // NOTE: do we need to display each criteria scores? Removing the last part of this query
+// // (s.criteria_id = ($3)) will make it so that it will just get all the scores from all judges immediately
+//
+// let judge_scores_on_criteria = sqlx::query_scalar::<_, i32>(
+//     r#"
+//      SELECT s.score, s.judge_id FROM scores s JOIN criterias c ON s.criteria_id = c.id
+//      WHERE s.candidate_id = ($1) AND c.category_id = ($2) AND s.criteria_id = ($3)
+//      "#,
+// )
+// .bind(&candidate_id)
+// .bind(&query.category_id)
+// .bind(&query.criteria_id)
+// .fetch_all(&pool)
+// .await
+// .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+//
+// let criteria_score: i32 = judge_scores_on_criteria.iter().sum();
+//
+// println!("\nCriteria Score: {criteria_score}");
+// println!("Category Weight: {category_weight}\n");
+
+// let final_category_score = (criteria_score as f32) * category_weight;
