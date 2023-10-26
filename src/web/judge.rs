@@ -13,20 +13,6 @@ pub struct Judge {
     pub event_id: uuid::Uuid,
 }
 
-impl Judge {
-    fn new(create: CreateJudge) -> Self {
-        let uuid = uuid::Uuid::new_v4();
-
-        Self {
-            id: uuid,
-            name: create.name,
-            event_id: create.event_id,
-            password: create.password,
-            is_active: create.is_active,
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 pub struct CreateJudge {
     name: String,
@@ -39,21 +25,22 @@ pub async fn create_judge(
     State(pool): State<PgPool>,
     axum::Json(payload): axum::Json<CreateJudge>,
 ) -> Result<(http::StatusCode, axum::Json<Judge>), http::StatusCode> {
-    let judge = Judge::new(payload);
-
-    let res = sqlx::query(
-        "INSERT INTO judges (id, name, password, is_active, event_id) VALUES ($1, $2, $3, $4, $5)",
+    let res = sqlx::query_as::<_, Judge>(
+        r#"
+        INSERT INTO judges (name, password, is_active, event_id) 
+        VALUES ($1, $2, $3, $4) 
+        RETURNING *
+        "#,
     )
-    .bind(&judge.id)
-    .bind(&judge.name)
-    .bind(&judge.password)
-    .bind(&judge.is_active)
-    .bind(&judge.event_id)
-    .execute(&pool)
+    .bind(&payload.name)
+    .bind(&payload.password)
+    .bind(&payload.is_active)
+    .bind(&payload.event_id)
+    .fetch_one(&pool)
     .await;
 
     match res {
-        Ok(_) => Ok((http::StatusCode::CREATED, axum::Json(judge))),
+        Ok(judge) => Ok((http::StatusCode::CREATED, axum::Json(judge))),
         Err(err) => {
             eprintln!("Failed to create judge: {err:?}");
 

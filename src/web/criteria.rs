@@ -1,10 +1,7 @@
 use axum::response::Result;
-use axum::{
-    extract::{Path, State},
-    http,
-};
+use axum::{extract, http};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool, Row};
+use sqlx::{FromRow, PgPool};
 
 #[derive(Debug, Serialize, FromRow)]
 pub struct Criteria {
@@ -12,24 +9,8 @@ pub struct Criteria {
     name: String,
     description: String,
     max_score: i32,
-    weight: f64,
     // Relationships
     category_id: uuid::Uuid,
-}
-
-impl Criteria {
-    fn new(create: CreateCriteria) -> Self {
-        let uuid = uuid::Uuid::new_v4();
-
-        Self {
-            category_id: create.category_id,
-            weight: create.weight,
-            max_score: create.max_score,
-            name: create.name,
-            description: create.description,
-            id: uuid,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,34 +18,30 @@ pub struct CreateCriteria {
     name: String,
     description: String,
     max_score: i32,
-    weight: f64,
-    category_id: uuid::Uuid,
 }
 
 // POST
 pub async fn create_criteria(
-    State(pool): State<PgPool>,
+    extract::State(pool): extract::State<PgPool>,
+    extract::Path((_event_id, category_id)): extract::Path<(uuid::Uuid, uuid::Uuid)>,
     axum::Json(payload): axum::Json<CreateCriteria>,
 ) -> Result<(http::StatusCode, axum::Json<Criteria>), http::StatusCode> {
-    let criteria = Criteria::new(payload);
-
-    let res = sqlx::query(
+    let res = sqlx::query_as::<_, Criteria>(
         r#"
-        INSERT INTO criterias (id, name, description, max_score, weight, category_id) 
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO criterias (name, description, max_score, category_id) 
+        VALUES ($1, $2, $3, $4)
+        RETURNING *
         "#,
     )
-    .bind(&criteria.id)
-    .bind(&criteria.name)
-    .bind(&criteria.description)
-    .bind(&criteria.max_score)
-    .bind(&criteria.weight)
-    .bind(&criteria.category_id)
-    .execute(&pool)
+    .bind(&payload.name)
+    .bind(&payload.description)
+    .bind(&payload.max_score)
+    .bind(&category_id)
+    .fetch_one(&pool)
     .await;
 
     match res {
-        Ok(_) => Ok((http::StatusCode::CREATED, axum::Json(criteria))),
+        Ok(criteria) => Ok((http::StatusCode::CREATED, axum::Json(criteria))),
         Err(err) => {
             eprintln!("Failed to create criteria: {err:?}");
 
@@ -73,10 +50,9 @@ pub async fn create_criteria(
     }
 }
 
-// GET
 pub async fn get_criterias(
-    State(pool): State<PgPool>,
-    Path((_event_id, category_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+    extract::State(pool): extract::State<PgPool>,
+    extract::Path((_event_id, category_id)): extract::Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> Result<axum::Json<Vec<Criteria>>, http::StatusCode> {
     let res = sqlx::query_as::<_, Criteria>("SELECT * FROM criterias WHERE category_id = ($1)")
         .bind(&category_id)
@@ -94,8 +70,12 @@ pub async fn get_criterias(
 }
 
 pub async fn get_criteria(
-    State(pool): State<PgPool>,
-    Path((_event_id, category_id, criteria_id)): Path<(uuid::Uuid, uuid::Uuid, uuid::Uuid)>,
+    extract::State(pool): extract::State<PgPool>,
+    extract::Path((_event_id, category_id, criteria_id)): extract::Path<(
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+    )>,
 ) -> Result<axum::Json<Criteria>, http::StatusCode> {
     let res = sqlx::query_as::<_, Criteria>(
         "SELECT * FROM criterias WHERE category_id = ($1) AND id = ($2)",

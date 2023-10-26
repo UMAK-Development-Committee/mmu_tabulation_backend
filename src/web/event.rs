@@ -2,23 +2,12 @@ use axum::extract::Path;
 use axum::response::Result;
 use axum::{extract::State, http};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool, Row};
+use sqlx::{FromRow, PgPool};
 
 #[derive(Debug, Serialize, FromRow)]
 pub struct Event {
     id: uuid::Uuid,
     name: String,
-}
-
-impl Event {
-    fn new(create: CreateEvent) -> Self {
-        let uuid = uuid::Uuid::new_v4();
-
-        Self {
-            id: uuid,
-            name: create.name,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,16 +19,13 @@ pub async fn create_event(
     State(pool): State<PgPool>,
     axum::Json(payload): axum::Json<CreateEvent>,
 ) -> Result<(http::StatusCode, axum::Json<Event>), http::StatusCode> {
-    let event = Event::new(payload);
-
-    let res = sqlx::query("INSERT INTO events (id, name) VALUES ($1, $2)")
-        .bind(&event.id)
-        .bind(&event.name)
-        .execute(&pool)
+    let res = sqlx::query_as::<_, Event>("INSERT INTO events (name) VALUES ($1) RETURNING *")
+        .bind(&payload.name)
+        .fetch_one(&pool)
         .await;
 
     match res {
-        Ok(_) => Ok((http::StatusCode::CREATED, axum::Json(event))),
+        Ok(event) => Ok((http::StatusCode::CREATED, axum::Json(event))),
         Err(err) => {
             eprintln!("Failed to create event: {err:?}");
 

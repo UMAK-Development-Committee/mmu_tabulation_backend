@@ -1,10 +1,8 @@
-use axum::extract::{Path, Query};
+use axum::extract::{Query, State};
 use axum::http;
 use axum::response::Result;
-use axum::Form;
-use axum::{extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool, Row};
+use sqlx::{FromRow, PgPool};
 
 #[derive(Debug, Serialize, FromRow)]
 pub struct Note {
@@ -14,21 +12,6 @@ pub struct Note {
     // Relationships
     candidate_id: uuid::Uuid,
     judge_id: uuid::Uuid,
-}
-
-impl Note {
-    fn new(create: CreateNote) -> Self {
-        let now = chrono::Utc::now();
-        let uuid = uuid::Uuid::new_v4();
-
-        Self {
-            judge_id: create.judge_id,
-            candidate_id: create.candidate_id,
-            note: create.note,
-            id: uuid,
-            last_change: now,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
