@@ -2,6 +2,8 @@ use axum::{extract, http, response::Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 
+use crate::error::AppError;
+
 #[derive(Debug, Serialize, FromRow)]
 pub struct Category {
     id: uuid::Uuid,
@@ -21,7 +23,7 @@ pub async fn create_category(
     extract::State(pool): extract::State<PgPool>,
     extract::Path(event_id): extract::Path<uuid::Uuid>,
     axum::Json(payload): axum::Json<CreateCategory>,
-) -> Result<(http::StatusCode, axum::Json<Category>), http::StatusCode> {
+) -> Result<(http::StatusCode, axum::Json<Category>), AppError> {
     let res = sqlx::query_as::<_, Category>(
         r#"
         INSERT INTO categories (name, weight, event_id) 
@@ -37,11 +39,10 @@ pub async fn create_category(
 
     match res {
         Ok(category) => Ok((http::StatusCode::CREATED, axum::Json(category))),
-        Err(err) => {
-            eprintln!("Failed to create category: {err:?}");
-
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(err) => Err(AppError::new(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to create category: {}", err),
+        )),
     }
 }
 

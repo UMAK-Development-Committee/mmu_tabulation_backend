@@ -3,6 +3,8 @@ use axum::{extract, http};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 
+use crate::error::AppError;
+
 #[derive(Debug, Serialize, FromRow)]
 pub struct Criteria {
     id: uuid::Uuid,
@@ -25,7 +27,7 @@ pub async fn create_criteria(
     extract::State(pool): extract::State<PgPool>,
     extract::Path((_event_id, category_id)): extract::Path<(uuid::Uuid, uuid::Uuid)>,
     axum::Json(payload): axum::Json<CreateCriteria>,
-) -> Result<(http::StatusCode, axum::Json<Criteria>), http::StatusCode> {
+) -> Result<(http::StatusCode, axum::Json<Criteria>), AppError> {
     let res = sqlx::query_as::<_, Criteria>(
         r#"
         INSERT INTO criterias (name, description, max_score, category_id) 
@@ -42,11 +44,10 @@ pub async fn create_criteria(
 
     match res {
         Ok(criteria) => Ok((http::StatusCode::CREATED, axum::Json(criteria))),
-        Err(err) => {
-            eprintln!("Failed to create criteria: {err:?}");
-
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(err) => Err(AppError::new(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to create criteria: {}", err),
+        )),
     }
 }
 

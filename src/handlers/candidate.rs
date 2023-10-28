@@ -5,6 +5,8 @@ use axum::response::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 
+use crate::error::AppError;
+
 #[derive(Debug, Serialize, FromRow)]
 pub struct Candidate {
     id: uuid::Uuid,
@@ -32,7 +34,7 @@ pub struct CreateCandidate {
 pub async fn create_candidate(
     State(pool): State<PgPool>,
     axum::Json(payload): axum::Json<CreateCandidate>,
-) -> Result<(http::StatusCode, axum::Json<Candidate>), http::StatusCode> {
+) -> Result<(http::StatusCode, axum::Json<Candidate>), AppError> {
     let res = sqlx::query_as::<_, Candidate>(
         r#"
         INSERT INTO candidates (first_name, middle_name, last_name, birthdate, gender, college, category_id) 
@@ -54,24 +56,27 @@ pub async fn create_candidate(
         Ok(candidate) => Ok((http::StatusCode::CREATED, axum::Json(candidate))),
         Err(err) => {
             eprintln!("Failed to create candidate: {err:?}");
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+            Err(AppError::new(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to create candidate: {}", err),
+            ))
         }
     }
 }
 
 pub async fn get_candidates(
     State(pool): State<PgPool>,
-) -> Result<axum::Json<Vec<Candidate>>, http::StatusCode> {
+) -> Result<axum::Json<Vec<Candidate>>, AppError> {
     let res = sqlx::query_as::<_, Candidate>("SELECT * FROM candidates")
         .fetch_all(&pool)
         .await;
 
     match res {
         Ok(candidates) => Ok(axum::Json(candidates)),
-        Err(err) => {
-            eprintln!("Failed to get all candidates: {err:?}");
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(err) => Err(AppError::new(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get candidates: {}", err),
+        )),
     }
 }
 

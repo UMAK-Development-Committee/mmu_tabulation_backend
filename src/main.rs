@@ -21,9 +21,9 @@ use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 
 mod error;
-mod web;
+mod handlers;
 
-use web::{auth, candidate, category, criteria, event, judge, note, score};
+use handlers::{auth, candidate, category, criteria, event, judge, note, score};
 
 struct AppState {
     // Channel used to send messages to all connected clients.

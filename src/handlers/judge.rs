@@ -3,6 +3,8 @@ use axum::{extract::State, http};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 
+use crate::error::AppError;
+
 #[derive(Debug, Serialize, FromRow)]
 pub struct Judge {
     pub id: uuid::Uuid,
@@ -24,7 +26,7 @@ pub struct CreateJudge {
 pub async fn create_judge(
     State(pool): State<PgPool>,
     axum::Json(payload): axum::Json<CreateJudge>,
-) -> Result<(http::StatusCode, axum::Json<Judge>), http::StatusCode> {
+) -> Result<(http::StatusCode, axum::Json<Judge>), AppError> {
     let res = sqlx::query_as::<_, Judge>(
         r#"
         INSERT INTO judges (name, password, is_active, event_id) 
@@ -41,26 +43,23 @@ pub async fn create_judge(
 
     match res {
         Ok(judge) => Ok((http::StatusCode::CREATED, axum::Json(judge))),
-        Err(err) => {
-            eprintln!("Failed to create judge: {err:?}");
-
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(err) => Err(AppError::new(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to create judge: {}", err),
+        )),
     }
 }
 
-pub async fn get_judges(
-    State(pool): State<PgPool>,
-) -> Result<axum::Json<Vec<Judge>>, http::StatusCode> {
+pub async fn get_judges(State(pool): State<PgPool>) -> Result<axum::Json<Vec<Judge>>, AppError> {
     let res = sqlx::query_as::<_, Judge>("SELECT * FROM judges")
         .fetch_all(&pool)
         .await;
 
     match res {
         Ok(judges) => Ok(axum::Json(judges)),
-        Err(err) => {
-            eprintln!("Failed to get judges: {err:?}");
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(err) => Err(AppError::new(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get judges: {}", err),
+        )),
     }
 }

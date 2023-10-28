@@ -4,20 +4,28 @@
 // Remove some noise
 #![allow(unused)]
 
-use axum::http::StatusCode;
+use axum::http;
 use axum::response::{IntoResponse, Response};
 
-pub type Result<T> = core::result::Result<T, Error>;
-
 #[derive(Debug)]
-pub enum Error {
-    RequestError,
+pub struct AppError {
+    message: String,
+    code: http::StatusCode,
 }
 
-impl IntoResponse for Error {
-    fn into_response(self) -> Response {
-        println!("->> {:<12} - {self:?}", "INTO_RES");
+impl AppError {
+    pub fn new(code: http::StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
 
-        (StatusCode::INTERNAL_SERVER_ERROR, "UNHANDLED_CLIENT_ERROR").into_response()
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        println!("->> {self:?}\n");
+
+        (self.code, self.message).into_response()
     }
 }

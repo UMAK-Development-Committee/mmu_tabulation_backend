@@ -4,7 +4,8 @@ use axum::response::Result;
 use serde::Deserialize;
 use sqlx::PgPool;
 
-use crate::web::judge::Judge;
+use crate::error::AppError;
+use crate::handlers::judge::Judge;
 
 #[derive(Debug, Deserialize)]
 pub struct User {
@@ -15,7 +16,7 @@ pub struct User {
 pub async fn login(
     State(pool): State<PgPool>,
     axum::Json(user): axum::Json<User>,
-) -> Result<axum::Json<Judge>, http::StatusCode> {
+) -> Result<axum::Json<Judge>, AppError> {
     let res =
         sqlx::query_as::<_, Judge>("SELECT * FROM judges WHERE name = ($1) AND password = ($2)")
             .bind(&user.name)
@@ -29,9 +30,12 @@ pub async fn login(
                 .bind(&judge.id)
                 .execute(&pool)
                 .await
-                .map_err(|_| {
+                .map_err(|err| {
                     eprintln!("Failed to set is_active to TRUE");
-                    http::StatusCode::INTERNAL_SERVER_ERROR
+                    AppError::new(
+                        http::StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to set is_active to TRUE: {}", err),
+                    )
                 })?;
 
             println!("Welcome, {}!", judge.name);
@@ -42,7 +46,10 @@ pub async fn login(
         Err(err) => {
             eprintln!("Failed to login: {err:?}");
 
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+            Err(AppError::new(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to login: {}", err),
+            ))
         }
     }
 }
@@ -55,7 +62,7 @@ pub struct LogOut {
 pub async fn logout(
     State(pool): State<PgPool>,
     axum::Json(logout): axum::Json<LogOut>,
-) -> Result<http::StatusCode, http::StatusCode> {
+) -> Result<http::StatusCode, AppError> {
     let res = sqlx::query("UPDATE judges SET is_active = FALSE WHERE id = ($1)")
         .bind(&logout.user_id)
         .execute(&pool)
@@ -70,7 +77,10 @@ pub async fn logout(
         Err(err) => {
             eprintln!("Failed to logout: {err:?}");
 
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+            Err(AppError::new(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to logout: {}", err),
+            ))
         }
     }
 }

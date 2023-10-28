@@ -5,6 +5,8 @@ use axum::response::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 
+use crate::error::AppError;
+
 #[derive(Debug, Deserialize, Serialize, FromRow)]
 pub struct Score {
     id: uuid::Uuid,
@@ -32,7 +34,7 @@ pub struct CreateScore {
 pub async fn submit_score(
     State(pool): State<PgPool>,
     axum::Json(payload): axum::Json<CreateScore>,
-) -> Result<(http::StatusCode, axum::Json<Score>), http::StatusCode> {
+) -> Result<(http::StatusCode, axum::Json<Score>), AppError> {
     let res = sqlx::query_as::<_, Score>(
         r#"
         INSERT INTO scores (score, max, candidate_id, criteria_id, category_id, judge_id) 
@@ -54,7 +56,10 @@ pub async fn submit_score(
         Err(err) => {
             eprintln!("Failed to submit score: {err:?}");
 
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+            Err(AppError::new(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to submit score: {}", err),
+            ))
         }
     }
 }
@@ -89,7 +94,7 @@ pub struct ScoreMax {
 pub async fn get_candidate_scores(
     State(pool): State<PgPool>,
     Query(query): Query<ScoreQuery>,
-) -> Result<axum::Json<Vec<CandidateFinalScore>>, http::StatusCode> {
+) -> Result<axum::Json<Vec<CandidateFinalScore>>, AppError> {
     let res = sqlx::query_as::<_, Candidate>(
         "SELECT id, first_name, middle_name, last_name FROM candidates",
     )
@@ -107,14 +112,22 @@ pub async fn get_candidate_scores(
                     candidate.first_name, candidate.middle_name, candidate.last_name
                 );
 
-                let final_score = get_candidate_score(&pool, &query.event_id, &candidate.id)
-                    .await
-                    .expect("Failed to get compute candidate score.");
+                let final_score = get_candidate_score(&pool, &query.event_id, &candidate.id).await;
 
-                candidate_final_scores.push(CandidateFinalScore {
-                    candidate_id: candidate.id,
-                    final_score,
-                });
+                match final_score {
+                    Ok(score) => {
+                        candidate_final_scores.push(CandidateFinalScore {
+                            candidate_id: candidate.id,
+                            final_score: score,
+                        });
+                    }
+                    Err(err) => {
+                        return Err(AppError::new(
+                            http::StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Failed to compute candidate score: {}", err),
+                        ))
+                    }
+                }
             }
 
             Ok(axum::Json(candidate_final_scores))
@@ -122,7 +135,10 @@ pub async fn get_candidate_scores(
         Err(err) => {
             eprintln!("Failed to get candidates when computing scores: {err:?}");
 
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+            Err(AppError::new(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get candidate scores: {}", err),
+            ))
         }
     }
 }
@@ -230,101 +246,113 @@ pub struct Category {
 // Generates a spreadsheet for the scoring system for the sake of transparency
 pub async fn generate_score_spreadsheet(
     State(pool): State<PgPool>,
-) -> Result<(http::StatusCode, Vec<u8>), http::StatusCode> {
-    let categories = sqlx::query_as::<_, Category>("SELECT id, name, weight FROM categories")
+) -> Result<(http::StatusCode, Vec<u8>), AppError> {
+    let res = sqlx::query_as::<_, Category>("SELECT id, name, weight FROM categories")
         .fetch_all(&pool)
-        .await
-        .map_err(|err| {
-            eprintln!("Failed to get categories: {:?}", err);
-            http::StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .await;
 
-    let mut csv_writer = csv::Writer::from_writer(Vec::new());
+    match res {
+        Ok(categories) => {
+            let mut csv_writer = csv::Writer::from_writer(Vec::new());
 
-    let headers = [
-        "Event",
-        "Category",
-        "Criteria",
-        "Candidate First Name",
-        "Candidate Middle Name",
-        "Candidate Last Name",
-        "Judge",
-        "Score",
-        "Max",
-        "Weight",
-    ];
+            let headers = [
+                "Event",
+                "Category",
+                "Criteria",
+                "Candidate First Name",
+                "Candidate Middle Name",
+                "Candidate Last Name",
+                "Judge",
+                "Score",
+                "Max",
+                "Weight",
+            ];
 
-    csv_writer.write_record(&headers).map_err(|err| {
-        eprintln!("Failed to write record for headers: {:?}", err);
-        http::StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+            csv_writer.write_record(&headers).map_err(|err| {
+                AppError::new(
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to write record for headers: {}", err),
+                )
+            })?;
 
-    for category in categories.iter() {
-        let criterias =
-            sqlx::query_as::<_, Criteria>("SELECT id, name FROM criterias WHERE category_id = $1")
+            for category in categories.iter() {
+                let criterias = sqlx::query_as::<_, Criteria>(
+                    "SELECT id, name FROM criterias WHERE category_id = $1",
+                )
                 .bind(category.id)
                 .fetch_all(&pool)
                 .await
                 .map_err(|err| {
-                    eprintln!("Failed to get criterias: {:?}", err);
-                    http::StatusCode::INTERNAL_SERVER_ERROR
+                    AppError::new(
+                        http::StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to get criterias: {}", err),
+                    )
                 })?;
 
-        for criteria in criterias.iter() {
-            let scores = sqlx::query_as::<_, CriteriaScore>(
-                r#"
-                SELECT s.score, s.max, j.name as judge_name, 
-                    can.first_name as candidate_first_name, 
-                    can.middle_name as candidate_middle_name, 
-                    can.last_name as candidate_last_name,
-                    cat.weight as weight,
-                    e.name as event_name
-                FROM scores s
-                JOIN judges j ON j.id = s.judge_id
-                JOIN candidates can ON can.id = s.candidate_id
-                JOIN categories cat ON cat.id = s.category_id
-                JOIN events e ON e.id = cat.event_id
-                WHERE s.category_id = ($1) AND s.criteria_id = ($2)
-                "#,
-            )
-            .bind(category.id)
-            .bind(criteria.id)
-            .fetch_all(&pool)
-            .await
-            .map_err(|err| {
-                eprintln!("Failed to get scores: {:?}", err);
-                http::StatusCode::INTERNAL_SERVER_ERROR
+                for criteria in criterias.iter() {
+                    let scores = sqlx::query_as::<_, CriteriaScore>(
+                        r#"
+                        SELECT s.score, s.max, j.name as judge_name, 
+                            can.first_name as candidate_first_name, 
+                            can.middle_name as candidate_middle_name, 
+                            can.last_name as candidate_last_name,
+                            cat.weight as weight,
+                            e.name as event_name
+                        FROM scores s
+                        JOIN judges j ON j.id = s.judge_id
+                        JOIN candidates can ON can.id = s.candidate_id
+                        JOIN categories cat ON cat.id = s.category_id
+                        JOIN events e ON e.id = cat.event_id
+                        WHERE s.category_id = ($1) AND s.criteria_id = ($2)
+                        "#,
+                    )
+                    .bind(category.id)
+                    .bind(criteria.id)
+                    .fetch_all(&pool)
+                    .await
+                    .map_err(|err| {
+                        AppError::new(
+                            http::StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Failed to get scores: {}", err),
+                        )
+                    })?;
+
+                    for score in scores.iter() {
+                        csv_writer
+                            .write_record(vec![
+                                &score.event_name,
+                                &category.name,
+                                &criteria.name,
+                                &score.candidate_first_name,
+                                &score.candidate_middle_name,
+                                &score.candidate_last_name,
+                                &score.judge_name,
+                                &score.score.to_string(),
+                                &score.max.to_string(),
+                                &score.weight.to_string(),
+                            ])
+                            .map_err(|err| {
+                                AppError::new(
+                                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!("Failed to serialize record: {}", err),
+                                )
+                            })?;
+                    }
+                }
+            }
+
+            let csv_bytes = csv_writer.into_inner().map_err(|err| {
+                AppError::new(
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format! {"Failed to generate CSV file: {}", err},
+                )
             })?;
 
-            for score in scores.iter() {
-                csv_writer
-                    .write_record(vec![
-                        &score.event_name,
-                        &category.name,
-                        &criteria.name,
-                        &score.candidate_first_name,
-                        &score.candidate_middle_name,
-                        &score.candidate_last_name,
-                        &score.judge_name,
-                        &score.score.to_string(),
-                        &score.max.to_string(),
-                        &score.weight.to_string(),
-                    ])
-                    .map_err(|err| {
-                        eprintln!("Failed to serialize record: {:?}", err);
-                        http::StatusCode::INTERNAL_SERVER_ERROR
-                    })?;
-            }
+            Ok((http::StatusCode::OK, csv_bytes))
         }
-    }
-
-    let csv_bytes = csv_writer.into_inner();
-
-    match csv_bytes {
-        Ok(csv) => Ok((http::StatusCode::OK, csv)),
-        Err(err) => {
-            eprintln!("Failed to generate CSV file: {err:?}");
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(err) => Err(AppError::new(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get categories: {}", err),
+        )),
     }
 }
