@@ -65,7 +65,30 @@ pub async fn submit_score(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ScoreQuery {
+pub struct ScoreParam {
+    criteria_id: uuid::Uuid,
+}
+
+pub async fn get_candidate_scores(
+    State(pool): State<PgPool>,
+    Query(query): Query<ScoreParam>,
+) -> Result<axum::Json<Vec<Score>>, AppError> {
+    let res = sqlx::query_as::<_, Score>("SELECT * FROM scores WHERE criteria_id = ($1)")
+        .bind(&query.criteria_id)
+        .fetch_all(&pool)
+        .await;
+
+    match res {
+        Ok(scores) => Ok(axum::Json(scores)),
+        Err(err) => Err(AppError::new(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get candidate scores: {}", err),
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FinalScoreParam {
     // candidate_id: uuid::Uuid,
     // category_id: uuid::Uuid,
     event_id: uuid::Uuid,
@@ -91,9 +114,9 @@ pub struct ScoreMax {
     max: i32,
 }
 
-pub async fn get_candidate_scores(
+pub async fn get_candidate_final_scores(
     State(pool): State<PgPool>,
-    Query(query): Query<ScoreQuery>,
+    Query(query): Query<FinalScoreParam>,
 ) -> Result<axum::Json<Vec<CandidateFinalScore>>, AppError> {
     let res = sqlx::query_as::<_, Candidate>(
         "SELECT id, first_name, middle_name, last_name FROM candidates",
@@ -112,7 +135,8 @@ pub async fn get_candidate_scores(
                     candidate.first_name, candidate.middle_name, candidate.last_name
                 );
 
-                let final_score = get_candidate_score(&pool, &query.event_id, &candidate.id).await;
+                let final_score =
+                    get_candidate_final_score(&pool, &query.event_id, &candidate.id).await;
 
                 match final_score {
                     Ok(score) => {
@@ -150,7 +174,7 @@ pub struct CategoryWeight {
 }
 
 // Calculate the final score to send to the client
-pub async fn get_candidate_score(
+pub async fn get_candidate_final_score(
     pool: &PgPool,
     event_id: &uuid::Uuid,
     candidate_id: &uuid::Uuid,
