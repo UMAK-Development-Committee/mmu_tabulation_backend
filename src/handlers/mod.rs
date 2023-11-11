@@ -6,3 +6,5 @@ pub mod event;
 pub mod judge;
 pub mod note;
 pub mod score;
+pub mod college;
+pub mod tests;

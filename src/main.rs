@@ -23,7 +23,7 @@ use tower_http::cors::CorsLayer;
 mod error;
 mod handlers;
 
-use handlers::{auth, candidate, category, criteria, event, judge, note, score};
+use handlers::{auth, candidate, category, criteria, event, judge, note, score, college};
 
 struct AppState {
     // Channel used to send messages to all connected clients.
@@ -98,6 +98,7 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
         .route("/scores/final", get(score::get_candidate_final_scores))
         .route("/scores/download", get(score::generate_score_spreadsheet))
         .route("/notes", post(note::create_note).get(note::get_note))
+        .route("/college", get(college::get_colleges))
         .layer(
             CorsLayer::new()
                 .allow_origin("*".parse::<http::HeaderValue>()?)

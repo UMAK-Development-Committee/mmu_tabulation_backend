@@ -9,7 +9,6 @@ use crate::error::AppError;
 pub struct Criteria {
     id: uuid::Uuid,
     name: String,
-    description: String,
     max_score: i32,
     // Relationships
     category_id: uuid::Uuid,
@@ -18,7 +17,6 @@ pub struct Criteria {
 #[derive(Debug, Deserialize)]
 pub struct CreateCriteria {
     name: String,
-    description: String,
     max_score: i32,
 }
 
@@ -36,7 +34,6 @@ pub async fn create_criteria(
         "#,
     )
     .bind(&payload.name)
-    .bind(&payload.description)
     .bind(&payload.max_score)
     .bind(&category_id)
     .fetch_one(&pool)

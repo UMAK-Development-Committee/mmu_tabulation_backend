@@ -13,9 +13,9 @@ pub struct Candidate {
     first_name: String,
     middle_name: String,
     last_name: String,
-    birthdate: chrono::NaiveDate,
     gender: i32,
-    college: String,
+    college_id: String,
+    candidate_number: i32,
     // Relationships
     category_id: uuid::Uuid,
 }
@@ -25,9 +25,9 @@ pub struct CreateCandidate {
     first_name: String,
     middle_name: String,
     last_name: String,
-    birthdate: chrono::NaiveDate,
+    candidate_number: i32,
     gender: i32,
-    college: String,
+    college_id: String,
     category_id: uuid::Uuid,
 }
 
@@ -45,9 +45,9 @@ pub async fn create_candidate(
     .bind(&payload.first_name)
     .bind(&payload.middle_name)
     .bind(&payload.last_name)
-    .bind(&payload.birthdate)
     .bind(&payload.gender)
-    .bind(&payload.college)
+    .bind(&payload.candidate_number)
+    .bind(&payload.college_id)
     .bind(&payload.category_id)
     .fetch_one(&pool)
     .await;
