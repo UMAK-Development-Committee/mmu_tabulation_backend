@@ -71,12 +71,21 @@ pub struct ScoreParam {
 
 pub async fn get_candidate_scores(
     State(pool): State<PgPool>,
-    Query(query): Query<ScoreParam>,
+    query: Option<Query<ScoreParam>>,
 ) -> Result<axum::Json<Vec<Score>>, AppError> {
-    let res = sqlx::query_as::<_, Score>("SELECT * FROM scores WHERE criteria_id = ($1)")
-        .bind(&query.criteria_id)
-        .fetch_all(&pool)
-        .await;
+    let res = match query {
+        Some(param) => {
+            sqlx::query_as::<_, Score>("SELECT * FROM scores WHERE criteria_id = ($1)")
+                .bind(&param.criteria_id)
+                .fetch_all(&pool)
+                .await
+        }
+        None => {
+            sqlx::query_as::<_, Score>("SELECT * FROM scores")
+                .fetch_all(&pool)
+                .await
+        }
+    };
 
     match res {
         Ok(scores) => Ok(axum::Json(scores)),

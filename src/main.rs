@@ -23,7 +23,7 @@ use tower_http::cors::CorsLayer;
 mod error;
 mod handlers;
 
-use handlers::{auth, candidate, category, criteria, event, judge, note, score, college};
+use handlers::{auth, candidate, category, college, criteria, event, judge, note, score};
 
 struct AppState {
     // Channel used to send messages to all connected clients.
@@ -37,9 +37,16 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
     let (tx, _rx) = broadcast::channel(100);
 
     let db_url = env::var("DATABASE_URL").context("DATABASE_URL env not found.")?;
-    let pool = sqlx::postgres::PgPool::connect(&db_url)
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(50)
+        // .acquire_timeout(std::time::Duration::from_millis(5000))
+        .connect(&db_url)
         .await
         .context("Couldn't connect to Postgres.")?;
+
+    // let pool = sqlx::postgres::PgPool::connect(&db_url)
+    //     .await
+    //     .context("Couldn't connect to Postgres.")?;
     let mut pg_listener = PgListener::connect_with(&pool)
         .await
         .context("Couldn't listen to pool.")?;
@@ -139,7 +146,7 @@ fn db_ws_listen(mut pg_listener: PgListener, app_state: Arc<AppState>) {
                     .context("Failed to send payload")
                     .unwrap();
 
-                println!("Notification 8000: {payload:?}\n");
+                println!("Notification:\n{payload:?}\n");
             }
 
             println!("Connection to Postgres lost.");
