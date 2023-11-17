@@ -96,6 +96,7 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
             "/candidates",
             post(candidate::create_candidate).get(candidate::get_candidates),
         )
+        .route("/candidates/score", get(score::get_candidate_score))
         .route("/candidates/:candidate_id", get(candidate::get_candidate))
         .route("/judges", post(judge::create_judge).get(judge::get_judges))
         .route(
@@ -106,14 +107,16 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
         .route("/scores/download", get(score::generate_score_spreadsheet))
         .route("/notes", post(note::create_note).get(note::get_note))
         .route("/college", get(college::get_colleges))
-        .layer(
-            CorsLayer::new()
-                .allow_origin("*".parse::<http::HeaderValue>()?)
-                .allow_methods([http::Method::GET, http::Method::POST]),
-        )
+        // .layer(
+        //     CorsLayer::new()
+        //         .allow_origin("*".parse::<http::HeaderValue>()?)
+        //         .allow_methods([http::Method::GET, http::Method::POST]),
+        // )
+        .layer(CorsLayer::permissive())
         .with_state(pool);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8000));
+    // for local development (NOT EXPOSURE TO THE NETWORK) it must be [127.0.0.1]
+    let addr = SocketAddr::from(([192, 168, 1, 177], 8000));
 
     println!("Server has started, listening on: {}\n", addr);
 
