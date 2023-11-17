@@ -67,6 +67,7 @@ pub async fn submit_score(
 #[derive(Debug, Deserialize)]
 pub struct ScoreParam {
     criteria_id: uuid::Uuid,
+    category_id: uuid::Uuid,
 }
 
 pub async fn get_candidate_scores(
@@ -75,10 +76,49 @@ pub async fn get_candidate_scores(
 ) -> Result<axum::Json<Vec<Score>>, AppError> {
     let res = match query {
         Some(param) => {
-            sqlx::query_as::<_, Score>("SELECT * FROM scores WHERE criteria_id = ($1)")
-                .bind(&param.criteria_id)
+            sqlx::query_as::<_, Score>(
+                "SELECT * FROM scores WHERE criteria_id = ($1) or category_id = ($2)",
+            )
+            .bind(&param.criteria_id)
+            .bind(&param.category_id)
+            .fetch_all(&pool)
+            .await
+        }
+        None => {
+            sqlx::query_as::<_, Score>("SELECT * FROM scores")
                 .fetch_all(&pool)
                 .await
+        }
+    };
+
+    match res {
+        Ok(scores) => Ok(axum::Json(scores)),
+        Err(err) => Err(AppError::new(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get candidate scores: {}", err),
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IndivScoreParam {
+    category_id: uuid::Uuid,
+    candidate_id: uuid::Uuid,
+}
+
+pub async fn get_candidate_score(
+    State(pool): State<PgPool>,
+    query: Option<Query<IndivScoreParam>>,
+) -> Result<axum::Json<Vec<Score>>, AppError> {
+    let res = match query {
+        Some(param) => {
+            sqlx::query_as::<_, Score>(
+                "SELECT * FROM scores WHERE category_id = ($1) AND candidate_id = ($2)",
+            )
+            .bind(&param.category_id)
+            .bind(&param.candidate_id)
+            .fetch_all(&pool)
+            .await
         }
         None => {
             sqlx::query_as::<_, Score>("SELECT * FROM scores")
@@ -114,6 +154,9 @@ pub struct Candidate {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CandidateFinalScore {
     candidate_id: uuid::Uuid,
+    first_name: String,
+    middle_name: String,
+    last_name: String,
     final_score: f32,
 }
 
@@ -151,6 +194,9 @@ pub async fn get_candidate_final_scores(
                     Ok(score) => {
                         candidate_final_scores.push(CandidateFinalScore {
                             candidate_id: candidate.id,
+                            first_name: candidate.first_name.clone(),
+                            middle_name: candidate.middle_name.clone(),
+                            last_name: candidate.last_name.clone(),
                             final_score: score,
                         });
                     }
