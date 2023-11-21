@@ -9,7 +9,7 @@ use crate::handlers::judge::Judge;
 
 #[derive(Debug, Deserialize)]
 pub struct User {
-    name: String,
+    username: String,
     password: String,
 }
 
@@ -17,12 +17,13 @@ pub async fn login(
     State(pool): State<PgPool>,
     axum::Json(user): axum::Json<User>,
 ) -> Result<axum::Json<Judge>, AppError> {
-    let res =
-        sqlx::query_as::<_, Judge>("SELECT * FROM judges WHERE name = ($1) AND password = ($2)")
-            .bind(&user.name)
-            .bind(&user.password)
-            .fetch_one(&pool)
-            .await;
+    let res = sqlx::query_as::<_, Judge>(
+        "SELECT * FROM judges WHERE username = ($1) AND password = ($2)",
+    )
+    .bind(&user.username)
+    .bind(&user.password)
+    .fetch_one(&pool)
+    .await;
 
     match res {
         Ok(judge) => {
