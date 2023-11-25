@@ -1,0 +1,6 @@
+id,name,password,is_active,event_id,username
+7d3ffd6d-ab55-4be7-9943-d6295442df3a,Ms. Quian Tagaduar,MMU9979,false,1829f346-82c0-4846-be17-5888289c0928,QT7177
+68bae2ab-7599-421c-b906-216b45ad4e05,Ms. Sandara Villon,MMU1099,true,1829f346-82c0-4846-be17-5888289c0928,SV4521
+0488e075-7fb5-48da-9b84-eb41fdedeb7f,Prof. Ryan Villanueva,MMU8185,true,1829f346-82c0-4846-be17-5888289c0928,RV1739
+b9128a7e-5581-4875-a79f-f1cb24f891c3,Ms. Christina Kyla Pol-ot,MMU5544,true,1829f346-82c0-4846-be17-5888289c0928,CKP1090
+d3af05ed-2081-4c1b-a464-d30d8aa70351,Prof. April Leaño,MMU1645,true,1829f346-82c0-4846-be17-5888289c0928,AL2875
