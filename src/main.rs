@@ -16,7 +16,7 @@ use axum::{
 use dotenv::dotenv;
 use futures::{sink::SinkExt, stream::StreamExt};
 use sqlx::postgres::PgListener;
-use std::{env, net::SocketAddr, sync::Arc};
+use std::{env, sync::Arc};
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 
@@ -34,9 +34,11 @@ struct AppState {
 async fn main() -> anyhow::Result<(), anyhow::Error> {
     dotenv().ok();
 
-    let (tx, _rx) = broadcast::channel(100);
+    let (tx, _rx) = broadcast::channel(50);
 
     let db_url = env::var("DATABASE_URL").context("DATABASE_URL env not found.")?;
+    let ip_addr = env::var("IP_ADDRESS").unwrap_or("127.0.0.1".to_string());
+
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(50)
         // .acquire_timeout(std::time::Duration::from_millis(5000))
@@ -99,6 +101,7 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
         .route("/candidates/score", get(score::get_candidate_score))
         .route("/candidates/:candidate_id", get(candidate::get_candidate))
         .route("/judges", post(judge::create_judge).get(judge::get_judges))
+        .route("/judges/:judge_id", get(judge::get_judge))
         .route(
             "/scores",
             post(score::submit_score).get(score::get_candidate_scores),
@@ -116,11 +119,13 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
         .with_state(pool);
 
     // for local development (NOT EXPOSURE TO THE NETWORK) it must be [127.0.0.1]
-    let addr = SocketAddr::from(([192, 168, 1, 177], 8000));
+    let addr = format!("{}:8000", ip_addr);
+    // let addr = SocketAddr::from(([127, 0, 0, 1], 8000));
+    // let addr = SocketAddr::from(([192, 168, 1, 177], 8000));
 
     println!("Server has started, listening on: {}\n", addr);
 
-    axum::Server::bind(&addr)
+    axum::Server::bind(&addr.parse()?)
         .serve(app.into_make_service())
         .await?;
 
@@ -179,9 +184,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     // Spawn a task that takes messages from the websocket and sends them to all broadcast subscribers.
     let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(Message::Text(text))) = receiver.next().await {
-            println!("{text}");
-            let _ = tx.send(format!("{}", text));
+        while let Some(Ok(Message::Text(event))) = receiver.next().await {
+            println!("{event}");
+            let _ = tx.send(event);
         }
     });
 
