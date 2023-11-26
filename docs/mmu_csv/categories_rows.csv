@@ -1,0 +1,9 @@
+id,name,event_id,weight
+92919c0e-43ba-42a3-a49b-55706c1b56ff,Preliminary Interview,1829f346-82c0-4846-be17-5888289c0928,0.25
+12162ed8-6622-4ac3-a308-01b81bc909e0,University Collegiate Costume,f9f0ae2b-57c7-42ca-a1ad-c5c1ae3639b5,0.25
+42e728e8-05df-405b-99fc-001e14e22cf0,Advocacy,f9f0ae2b-57c7-42ca-a1ad-c5c1ae3639b5,0.4
+ba8e137a-f1f7-4775-891a-f128138c2f17,Glamshot,f9f0ae2b-57c7-42ca-a1ad-c5c1ae3639b5,0.1
+b7ee7a67-aa72-4974-97d9-a6dffe6e4b7e,Opening Statement,137feec0-392b-422f-911c-7b1ec72454b1,0.4
+33adc659-5c89-47dd-8059-7e1de63b34fb,Swimwear,137feec0-392b-422f-911c-7b1ec72454b1,0.3
+1f48ff25-e4a2-4fa5-93b8-da22b3053384,Formal Wear and Long Gown,137feec0-392b-422f-911c-7b1ec72454b1,0.3
+e5ffdb02-bddb-4d07-90fe-bd02e908a739,Final Top 10 Candidates,137feec0-392b-422f-911c-7b1ec72454b1,1
