@@ -6,11 +6,11 @@ use crate::error::AppError;
 
 #[derive(Debug, Serialize, FromRow)]
 pub struct Category {
-    id: uuid::Uuid,
-    name: String,
-    weight: f32,
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub weight: f32,
     // Relationships
-    event_id: uuid::Uuid,
+    pub event_id: uuid::Uuid,
 }
 
 #[derive(Debug, Deserialize)]

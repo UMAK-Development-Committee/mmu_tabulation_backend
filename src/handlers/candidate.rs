@@ -9,15 +9,15 @@ use crate::error::AppError;
 
 #[derive(Debug, Serialize, FromRow)]
 pub struct Candidate {
-    id: uuid::Uuid,
-    first_name: String,
-    middle_name: String,
-    last_name: String,
-    gender: i32,
-    college_id: String,
-    candidate_number: i32,
+    pub id: uuid::Uuid,
+    pub first_name: String,
+    pub middle_name: String,
+    pub last_name: String,
+    pub gender: i32,
+    pub college_id: String,
+    pub candidate_number: i32,
     // Relationships
-    category_id: uuid::Uuid,
+    pub category_id: uuid::Uuid,
 }
 
 #[derive(Debug, Deserialize)]
