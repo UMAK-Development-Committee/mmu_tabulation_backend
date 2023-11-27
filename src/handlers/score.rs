@@ -362,6 +362,8 @@ pub async fn generate_score_spreadsheet(
                     )
                     .unwrap();
 
+                // Remove category_id filter to get all candidates instead
+                // If category_id is not needed, this can be done outside the loop instead
                 let candidates = sqlx::query_as::<_, Candidate>(
                     r#"
                     SELECT * FROM candidates 
@@ -381,6 +383,8 @@ pub async fn generate_score_spreadsheet(
 
                 let candidates_length = candidates.len();
 
+                // Could use the Rayon crate for this
+                // If category_id is not needed for candidates, do this outside the loop instead
                 let (male_candidates, female_candidates): (Vec<Candidate>, Vec<Candidate>) =
                     candidates
                         .into_iter()
@@ -389,13 +393,17 @@ pub async fn generate_score_spreadsheet(
                 worksheet
                     .write_with_format(1 + row_offset, 0, "Candidate #", &bold_format)
                     .context("Failed to write candidate numbers header.")
-                    .unwrap();
+                    .map_err(|err| AppError::from(err))?;
 
                 worksheet
                     .write_with_format(1 + row_offset, 1, "Name", &bold_format)
                     .context("Failed to write candidate name header.")
-                    .unwrap();
+                    .map_err(|err| AppError::from(err))?;
 
+                // Could be improved, it's not necessary to fetch the same judges on the same
+                // event_id
+                // Could use a Hashmap wherein the event_id is they key and the vector of judges
+                // are the values
                 let judges =
                     sqlx::query_as::<_, Judge>("SELECT * FROM judges WHERE event_id = ($1)")
                         .bind(&category.event_id)
@@ -430,7 +438,7 @@ pub async fn generate_score_spreadsheet(
                         "Average Score",
                         &bold_format,
                     )
-                    .unwrap();
+                    .map_err(|err| AppError::from(err))?;
 
                 worksheet
                     .write_with_format(
@@ -439,7 +447,7 @@ pub async fn generate_score_spreadsheet(
                         format!("{}%", category.weight * 100.0),
                         &bold_format,
                     )
-                    .unwrap();
+                    .map_err(|err| AppError::from(err))?;
 
                 worksheet.write(row_offset + 2, 0, "MALE").unwrap();
 
@@ -453,7 +461,7 @@ pub async fn generate_score_spreadsheet(
                     3 + row_offset,
                     0,
                 )
-                .await;
+                .await?;
 
                 let male_candidates_length = male_candidates.len();
 
@@ -471,7 +479,7 @@ pub async fn generate_score_spreadsheet(
                     row_offset + 4 + male_candidates_length as u32,
                     0,
                 )
-                .await;
+                .await?;
 
                 row_offset += candidates_length as u32 + 5;
             }
@@ -500,7 +508,7 @@ async fn write_scores(
     judges: &Vec<Judge>,
     row: RowNum,
     col: ColNum,
-) {
+) -> Result<(), AppError> {
     for (candidate_idx, candidate) in candidates.iter().enumerate() {
         // Write candidate numbers
         worksheet
@@ -510,7 +518,7 @@ async fn write_scores(
                 candidate.candidate_number,
             )
             .context("Failed to write candidate numbers.")
-            .unwrap();
+            .map_err(|err| AppError::from(err))?;
 
         // Write candidate names
         worksheet
@@ -523,12 +531,13 @@ async fn write_scores(
                 ),
             )
             .context("Failed to write candidate names.")
-            .unwrap();
+            .map_err(|err| AppError::from(err))?;
 
         let mut total_score: f32 = 0.0;
 
         // Write candidate scores
         for (judge_idx, judge) in judges.iter().enumerate() {
+            // Could be improved
             let scores = sqlx::query_as::<_, Score>(
                 "SELECT * FROM scores WHERE candidate_id = ($1) AND category_id = ($2) AND judge_id = ($3)",
             )
@@ -550,28 +559,36 @@ async fn write_scores(
                     2 + col + judge_idx as u16,
                     total_score_for_judge,
                 )
-                .unwrap();
+                .map_err(|err| AppError::from(err))?;
         }
 
         let average_score: f32 = total_score / judges.len() as f32;
-
-        // Write candidate average scores
-        worksheet.write(
-            row + candidate_idx as u32,
-            2 + col + judges.len() as u16,
-            format!("{:.2}", average_score),
-        );
-
         let score_in_percentage: f32 = average_score * category.weight;
 
+        // Write candidate average scores
+        worksheet
+            .write(
+                row + candidate_idx as u32,
+                2 + col + judges.len() as u16,
+                format!("{:.2}", average_score),
+            )
+            .map_err(|err| AppError::from(err))?;
+
         // Write candidate average scores in percentage
-        worksheet.write(
-            row + candidate_idx as u32,
-            3 + col + judges.len() as u16,
-            format!("{:.2}", score_in_percentage),
-        );
+        worksheet
+            .write(
+                row + candidate_idx as u32,
+                3 + col + judges.len() as u16,
+                format!("{:.2}", score_in_percentage),
+            )
+            .map_err(|err| AppError::from(err))?;
     }
+
+    Ok(())
 }
+
+// OLD CODE
+// FOR GENERATING CSV SPREADSHEET
 
 // Generates a spreadsheet for the scoring system for the sake of transparency
 // pub async fn generate_score_spreadsheet(
