@@ -106,6 +106,10 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
             "/scores",
             post(score::submit_score).get(score::get_candidate_scores),
         )
+        .route(
+            "/scores/update",
+            post(score::update_score)
+        )
         .route("/scores/final", get(score::get_candidate_final_scores))
         .route("/scores/download", get(score::generate_score_spreadsheet))
         .route("/notes", post(note::create_note).get(note::get_note))
