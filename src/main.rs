@@ -17,7 +17,7 @@ use dotenv::dotenv;
 use futures::{sink::SinkExt, stream::StreamExt};
 use sqlx::postgres::PgListener;
 use std::{env, sync::Arc};
-use tokio::sync::broadcast;
+use tokio::{net::TcpListener, sync::broadcast};
 use tower_http::cors::CorsLayer;
 
 mod error;
@@ -41,14 +41,10 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(50)
-        // .acquire_timeout(std::time::Duration::from_millis(5000))
         .connect(&db_url)
         .await
         .context("Couldn't connect to Postgres.")?;
 
-    // let pool = sqlx::postgres::PgPool::connect(&db_url)
-    //     .await
-    //     .context("Couldn't connect to Postgres.")?;
     let mut pg_listener = PgListener::connect_with(&pool)
         .await
         .context("Couldn't listen to pool.")?;
@@ -106,32 +102,23 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
             "/scores",
             post(score::submit_score).get(score::get_candidate_scores),
         )
-        .route(
-            "/scores/update",
-            post(score::update_score)
-        )
+        .route("/scores/update", post(score::update_score))
         .route("/scores/final", get(score::get_candidate_final_scores))
         .route("/scores/download", get(score::generate_score_spreadsheet))
         .route("/notes", post(note::create_note).get(note::get_note))
         .route("/college", get(college::get_colleges))
-        // .layer(
-        //     CorsLayer::new()
-        //         .allow_origin("*".parse::<http::HeaderValue>()?)
-        //         .allow_methods([http::Method::GET, http::Method::POST]),
-        // )
         .layer(CorsLayer::permissive())
         .with_state(pool);
 
-    // for local development (NOT EXPOSURE TO THE NETWORK) it must be [127.0.0.1]
-    let addr = format!("{}:8000", ip_addr);
-    // let addr = SocketAddr::from(([127, 0, 0, 1], 8000));
-    // let addr = SocketAddr::from(([192, 168, 1, 177], 8000));
+    // For local development (NOT EXPOSURE TO THE NETWORK) it must be [127.0.0.1]
+    let listener = TcpListener::bind(format!("{}:8000", ip_addr)).await?;
 
-    println!("Server has started, listening on: {}\n", addr);
+    println!(
+        "Server has started, listening on: {:?}\n",
+        listener.local_addr()?
+    );
 
-    axum::Server::bind(&addr.parse()?)
-        .serve(app.into_make_service())
-        .await?;
+    axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
 }
@@ -155,7 +142,7 @@ fn db_ws_listen(mut pg_listener: PgListener, app_state: Arc<AppState>) {
                 app_state
                     .tx
                     .send(payload.to_string())
-                    .context("Failed to send payload")
+                    .context("Failed to send payload.")
                     .unwrap();
 
                 println!("Notification:\n{payload:?}\n");
@@ -189,8 +176,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     // Spawn a task that takes messages from the websocket and sends them to all broadcast subscribers.
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(Message::Text(event))) = receiver.next().await {
-            println!("{event}");
-            let _ = tx.send(event);
+            println!("Sending Event:\n{event}\n");
+
+            tx.send(event).unwrap();
         }
     });
 

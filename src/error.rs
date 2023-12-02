@@ -23,29 +23,29 @@ impl AppError {
     }
 }
 
-// impl From<AppError> for XlsxError {
-//     fn from(app_error: AppError) -> Self {
-//         XlsxError::IoError(std::io::Error::new(
-//             std::io::ErrorKind::Other,
-//             app_error.message,
-//         ))
-//     }
-// }
-
-impl From<XlsxError> for AppError {
-    fn from(xlsx_error: XlsxError) -> Self {
+impl From<sqlx::Error> for AppError {
+    fn from(error: sqlx::Error) -> Self {
         AppError {
             code: http::StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("XlsxError: {}", xlsx_error),
+            message: format!("SQLx Error: {}", error),
+        }
+    }
+}
+
+impl From<XlsxError> for AppError {
+    fn from(error: XlsxError) -> Self {
+        AppError {
+            code: http::StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("Xlsx Error: {}", error),
         }
     }
 }
 
 impl From<anyhow::Error> for AppError {
-    fn from(anyhow_error: anyhow::Error) -> Self {
+    fn from(error: anyhow::Error) -> Self {
         AppError {
             code: http::StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("AnyhowError: {}", anyhow_error),
+            message: format!("Anyhow Error: {}", error),
         }
     }
 }
