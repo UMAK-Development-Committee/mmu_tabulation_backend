@@ -2,8 +2,10 @@ use anyhow::Context;
 use axum::extract::{Query, State};
 use axum::http;
 use axum::response::Result;
+use chrono::Local;
 use rust_xlsxwriter::*;
 use serde::{Deserialize, Serialize};
+use sqlx::query::QueryAs;
 use sqlx::{FromRow, PgPool};
 
 use crate::error::AppError;
@@ -53,6 +55,38 @@ pub async fn submit_score(
     .bind(&payload.criteria_id)
     .bind(&payload.category_id)
     .bind(&payload.judge_id)
+    .fetch_one(&pool)
+    .await;
+
+    match res {
+        Ok(score) => Ok((http::StatusCode::CREATED, axum::Json(score))),
+        Err(err) => {
+            eprintln!("Failed to submit score: {err:?}");
+
+            Err(AppError::new(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to submit score: {}", err),
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UpdateScore {
+    score_id: uuid::Uuid,
+    score: i32,
+}
+
+pub async fn update_score(
+    State(pool): State<PgPool>,
+    axum::Json(payload): axum::Json<UpdateScore>,
+) -> Result<(http::StatusCode, axum::Json<Score>), AppError> {
+    let res = sqlx::query_as::<_, Score>(r#"
+        UPDATE scores SET score = $1, time_of_scoring = $2 WHERE id = $3 RETURNING *
+    "#)
+    .bind(&payload.score)
+    .bind(Local::now())
+    .bind(&payload.score_id)
     .fetch_one(&pool)
     .await;
 
@@ -367,7 +401,6 @@ pub async fn generate_score_spreadsheet(
                 let candidates = sqlx::query_as::<_, Candidate>(
                     r#"
                     SELECT * FROM candidates 
-                    WHERE category_id = ($1) 
                     ORDER BY 
                         CASE
                             WHEN gender = 1 THEN 1
