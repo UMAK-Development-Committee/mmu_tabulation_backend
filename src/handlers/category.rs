@@ -11,6 +11,7 @@ pub struct Category {
     pub weight: f32,
     // Relationships
     pub event_id: uuid::Uuid,
+    pub is_active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +63,12 @@ pub async fn get_categories(
             Err(http::StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+pub async fn update_category(
+    extract::State(pool): extract::State<PgPool>,
+    extract::Path((event_id, category_id)): extract::Path<(uuid::Uuid, uuid::Uuid)>,
+) -> Result<axum::Json<Category>, http::StatusCode> {
 }
 
 pub async fn get_category(
