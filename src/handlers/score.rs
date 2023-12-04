@@ -12,7 +12,10 @@ use crate::error::AppError;
 
 use super::candidate::Candidate;
 use super::category::Category;
+use super::criteria::Criteria;
+use super::event::Event;
 use super::judge::Judge;
+use super::Round;
 
 #[derive(Debug, Deserialize, Serialize, FromRow)]
 pub struct Score {
@@ -83,8 +86,10 @@ pub async fn update_score(
 ) -> Result<(http::StatusCode, axum::Json<Score>), AppError> {
     let res = sqlx::query_as::<_, Score>(
         r#"
-        UPDATE scores SET score = $1, time_of_scoring = $2 WHERE id = $3 RETURNING *
-    "#,
+        UPDATE scores SET score = ($1), time_of_scoring = ($2) 
+        WHERE id = ($3) 
+        RETURNING *
+        "#,
     )
     .bind(&payload.score)
     .bind(Local::now())
@@ -201,12 +206,6 @@ pub struct CandidateFinalScore {
     final_score: f32,
 }
 
-#[derive(Debug, Deserialize, FromRow)]
-pub struct ScoreMax {
-    score: i32,
-    max: i32,
-}
-
 pub async fn get_candidate_final_scores(
     State(pool): State<PgPool>,
     Query(query): Query<FinalScoreParam>,
@@ -228,25 +227,15 @@ pub async fn get_candidate_final_scores(
                 );
 
                 let final_score =
-                    get_candidate_final_score(&pool, &query.event_id, &candidate.id).await;
+                    get_candidate_final_score(&pool, &query.event_id, &candidate.id).await?;
 
-                match final_score {
-                    Ok(score) => {
-                        candidate_final_scores.push(CandidateFinalScore {
-                            candidate_id: candidate.id,
-                            first_name: candidate.first_name.clone(),
-                            middle_name: candidate.middle_name.clone(),
-                            last_name: candidate.last_name.clone(),
-                            final_score: score,
-                        });
-                    }
-                    Err(err) => {
-                        return Err(AppError::new(
-                            http::StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("Failed to compute candidate score: {}", err),
-                        ))
-                    }
-                }
+                candidate_final_scores.push(CandidateFinalScore {
+                    candidate_id: candidate.id,
+                    first_name: candidate.first_name.clone(),
+                    middle_name: candidate.middle_name.clone(),
+                    last_name: candidate.last_name.clone(),
+                    final_score,
+                });
             }
 
             Ok(axum::Json(candidate_final_scores))
@@ -268,72 +257,51 @@ pub struct CategoryWeight {
     weight: f32,
 }
 
+#[derive(Debug, Deserialize, FromRow)]
+pub struct ScoreMax {
+    total_score: i64,
+    total_max: i64,
+    weighted_score: f64,
+    weighted_max: f64,
+}
+
 // Calculate the final score to send to the client
 pub async fn get_candidate_final_score(
     pool: &PgPool,
     event_id: &uuid::Uuid,
     candidate_id: &uuid::Uuid,
-) -> Result<f32, http::StatusCode> {
-    let category_weights: Vec<CategoryWeight> = sqlx::query_as::<_, CategoryWeight>(
-        "SELECT id, weight FROM categories WHERE event_id = ($1)",
+) -> Result<f32, AppError> {
+    let scores = sqlx::query_as::<_, ScoreMax>(
+        r#"
+        SELECT 
+            COALESCE(SUM(s.score), 0) AS total_score, 
+            COALESCE(SUM(s.max), 0) AS total_max,
+            COALESCE(SUM(s.score), 0) * cat.weight AS weighted_score,
+            COALESCE(SUM(s.max), 0) * cat.weight AS weighted_max
+        FROM 
+            categories cat
+        LEFT JOIN 
+            scores s ON s.category_id = cat.id AND s.candidate_id = ($1)
+        WHERE 
+            cat.event_id = ($2)
+        GROUP BY
+            cat.id, cat.weight
+        "#,
     )
-    .bind(&event_id)
+    .bind(candidate_id)
+    .bind(event_id)
     .fetch_all(pool)
-    .await
-    .context("Failed to fetch category weights")
-    .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    .await?;
 
-    let mut weighted_scores = Vec::with_capacity(category_weights.len());
-    let mut weighted_max_scores = Vec::with_capacity(category_weights.len());
-    let mut weights = Vec::with_capacity(category_weights.len());
+    let mut weighted_scores_sum: f64 = 0.0;
+    let mut weighted_max_sum: f64 = 0.0;
 
-    for (i, category) in category_weights.iter().enumerate() {
-        let category_scores = sqlx::query_as::<_, ScoreMax>(
-            "SELECT score, max FROM scores WHERE category_id = ($1) AND candidate_id = ($2)",
-        )
-        .bind(category.id)
-        .bind(candidate_id)
-        .fetch_all(pool)
-        .await
-        .context(format!("Failed to fetch scores for category {}", i + 1))
-        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        let total_score: i32 = category_scores
-            .iter()
-            .fold(0, |acc, score| acc + score.score);
-
-        let total_max_score: i32 = category_scores.iter().fold(0, |acc, score| acc + score.max);
-
-        let weighted_score = (total_score as f32) * category.weight;
-        let weighted_max_score = (total_max_score as f32) * category.weight;
-
-        println!("Category {} Scores: {:?}", i + 1, category_scores);
-        println!("Category {} Total Score: {}", i + 1, total_score);
-        println!("Category {} Max Score: {}", i + 1, total_max_score);
-        println!("Category {} Weight: {}", i + 1, category.weight);
-        println!("Category {} Weighted Score: {}\n", i + 1, weighted_score);
-        println!(
-            "Category {} Weighted Max Score: {}\n",
-            i + 1,
-            weighted_max_score
-        );
-
-        weighted_scores.push(weighted_score);
-        weighted_max_scores.push(weighted_max_score);
-        weights.push(category.weight);
+    for score in scores.iter() {
+        weighted_scores_sum += score.weighted_score.round_to_two_decimals();
+        weighted_max_sum += score.weighted_max.round_to_two_decimals();
     }
 
-    println!("Weighted Scores: {weighted_scores:?}");
-    println!("Weighted Max Scores: {weighted_max_scores:?}");
-
-    let weighted_scores_sum: f32 = weighted_scores.iter().sum();
-    let weighted_max_scores_sum: f32 = weighted_max_scores.iter().sum();
-    // let weights_sum: f32 = weights.iter().sum();
-    let final_score = (weighted_scores_sum / weighted_max_scores_sum) * 100.0;
-
-    println!("Sum of Weighted Scores: {weighted_scores_sum}");
-    println!("Sum of Weighted Max Scores: {weighted_max_scores_sum}");
-    println!("Final Score: {final_score}\n");
+    let final_score = ((weighted_scores_sum / weighted_max_sum) * 100.0) as f32;
 
     Ok(final_score)
 }
@@ -361,6 +329,43 @@ pub async fn get_candidate_final_score(
 //     id: uuid::Uuid,
 //     name: String,
 // }
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct Test {
+    candidate_id: uuid::Uuid,
+    category: String,
+    total_score: i64,
+}
+
+// EXPERIMENTAL
+pub async fn foo(
+    State(pool): State<PgPool>,
+) -> Result<(http::StatusCode, axum::Json<Vec<Test>>), AppError> {
+    // Get all on events table
+    // Each category per event
+    // Each criteria per category
+    // Get all on candidates table
+    // Get all on judges table
+    // Get all on scores table
+    //
+    // THINGS TO WRITE:
+    // Event Names
+    // Category Names
+    // Criteria Names
+    // Candidate Names
+    // Judge Names
+    // Canddate Scores
+    let res = sqlx::query_as::<_, Test>(
+        r#"
+        "#,
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    println!("{:?}", res);
+
+    Ok((http::StatusCode::OK, axum::Json(res)))
+}
 
 pub async fn generate_score_spreadsheet(
     State(pool): State<PgPool>,
@@ -532,6 +537,7 @@ async fn write_scores(
         // Write candidate scores
         for (judge_idx, judge) in judges.iter().enumerate() {
             // Could be improved
+            // Use SQL to get the sum instead
             let scores = sqlx::query_as::<_, Score>(
                 "SELECT * FROM scores WHERE candidate_id = ($1) AND category_id = ($2) AND judge_id = ($3)",
             )

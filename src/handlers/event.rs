@@ -8,7 +8,7 @@ use sqlx::{FromRow, PgPool};
 pub struct Event {
     id: uuid::Uuid,
     name: String,
-    active_event: bool
+    active_event: bool,
 }
 
 #[derive(Debug, Deserialize)]

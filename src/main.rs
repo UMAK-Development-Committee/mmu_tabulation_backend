@@ -42,17 +42,11 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(50)
         .connect(&db_url)
-        .await
-        .context("Couldn't connect to Postgres.")?;
+        .await?;
 
-    let mut pg_listener = PgListener::connect_with(&pool)
-        .await
-        .context("Couldn't listen to pool.")?;
+    let mut pg_listener = PgListener::connect_with(&pool).await?;
 
-    pg_listener
-        .listen_all(vec!["updates"])
-        .await
-        .context("Couldn't listen to channel.")?;
+    pg_listener.listen_all(vec!["updates"]).await?;
 
     let app_state = Arc::new(AppState { tx });
 
@@ -107,6 +101,8 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
         .route("/scores/download", get(score::generate_score_spreadsheet))
         .route("/notes", post(note::create_note).get(note::get_note))
         .route("/college", get(college::get_colleges))
+        // EXPERIMENTAL
+        .route("/scores/foo", get(score::foo))
         .layer(CorsLayer::permissive())
         .with_state(pool);
 
