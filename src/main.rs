@@ -16,7 +16,7 @@ use axum::{
 use dotenv::dotenv;
 use futures::{sink::SinkExt, stream::StreamExt};
 use sqlx::postgres::PgListener;
-use std::{env, sync::Arc};
+use std::env;
 use tokio::{net::TcpListener, sync::broadcast};
 use tower_http::cors::CorsLayer;
 
@@ -25,16 +25,11 @@ mod handlers;
 
 use handlers::{auth, candidate, category, college, criteria, event, judge, note, score};
 
-struct AppState {
-    // Channel used to send messages to all connected clients.
-    tx: broadcast::Sender<String>,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<(), anyhow::Error> {
     dotenv().ok();
 
-    let (tx, _rx) = broadcast::channel(50);
+    let (tx, _rx): (broadcast::Sender<String>, _) = broadcast::channel(50);
 
     let db_url = env::var("DATABASE_URL").context("DATABASE_URL env not found.")?;
     let ip_addr = env::var("IP_ADDRESS").unwrap_or("127.0.0.1".to_string());
@@ -48,16 +43,14 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
 
     pg_listener.listen_all(vec!["updates"]).await?;
 
-    let app_state = Arc::new(AppState { tx });
-
     println!("\nNow listening to Postgres...\n");
 
-    db_ws_listen(pg_listener, app_state.clone());
+    db_ws_listen(pg_listener, tx.clone());
 
     let app = Router::new()
         // WebSocket
         .route("/ws", get(ws_handler))
-        .with_state(app_state)
+        .with_state(tx)
         .route("/", get(health))
         // Auth
         .route("/login", post(auth::login))
@@ -124,7 +117,7 @@ async fn health() -> (http::StatusCode, String) {
 }
 
 // Listen to the database in real-time and send the notification to the websocket
-fn db_ws_listen(mut pg_listener: PgListener, app_state: Arc<AppState>) {
+fn db_ws_listen(mut pg_listener: PgListener, tx: broadcast::Sender<String>) {
     tokio::spawn(async move {
         loop {
             while let Some(notification) = pg_listener
@@ -135,9 +128,7 @@ fn db_ws_listen(mut pg_listener: PgListener, app_state: Arc<AppState>) {
             {
                 let payload = notification.payload();
 
-                app_state
-                    .tx
-                    .send(payload.to_string())
+                tx.send(payload.to_string())
                     .context("Failed to send payload.")
                     .unwrap();
 
@@ -149,14 +140,17 @@ fn db_ws_listen(mut pg_listener: PgListener, app_state: Arc<AppState>) {
     });
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<broadcast::Sender<String>>,
+) -> Response {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+async fn handle_socket(socket: WebSocket, tx: broadcast::Sender<String>) {
     let (mut sender, mut receiver) = socket.split();
 
-    let mut rx = state.tx.subscribe();
+    let mut rx = tx.subscribe();
 
     // Spawn the first task that will receive broadcast messages and send text messages over the websocket to our client.
     let mut send_task = tokio::spawn(async move {
@@ -166,8 +160,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
             }
         }
     });
-
-    let tx = state.tx.clone();
 
     // Spawn a task that takes messages from the websocket and sends them to all broadcast subscribers.
     let mut recv_task = tokio::spawn(async move {
