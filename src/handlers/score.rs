@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Context;
 use axum::extract::{Query, State};
 use axum::http;
@@ -206,34 +208,76 @@ pub struct CandidateFinalScore {
     final_score: f32,
 }
 
+// Temporary, might change it
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CandidateFinalScore2 {
+    candidate_id: uuid::Uuid,
+    candidate_name: String,
+    final_score: f32,
+}
+
+#[derive(Debug, Deserialize, Serialize, FromRow)]
+pub struct CandidateScore {
+    candidate_id: uuid::Uuid,
+    first_name: String,
+    middle_name: String,
+    last_name: String,
+    total_score: i64,
+    total_max: i64,
+    weighted_score: f64,
+    weighted_max: f64,
+}
+
+// It works but it might be inefficient
+// Immediately gets the final score of all candidates
+// TODO: Calculate score for all events
 pub async fn get_candidate_final_scores(
     State(pool): State<PgPool>,
     Query(query): Query<FinalScoreParam>,
-) -> Result<axum::Json<Vec<CandidateFinalScore>>, AppError> {
-    // "SELECT id, first_name, middle_name, last_name FROM candidates",
-    let res = sqlx::query_as::<_, Candidate>("SELECT * FROM candidates")
-        .fetch_all(&pool)
-        .await;
+) -> Result<axum::Json<Vec<CandidateFinalScore2>>, AppError> {
+    let res = sqlx::query_as::<_, CandidateScore>(
+        r#"
+        SELECT 
+            c.id AS candidate_id,
+            c.first_name,
+            c.middle_name,
+            c.last_name,
+            COALESCE(SUM(s.score), 0) AS total_score, 
+            COALESCE(SUM(s.max), 0) AS total_max,
+            COALESCE(SUM(s.score), 0) * cat.weight AS weighted_score,
+            COALESCE(SUM(s.max), 0) * cat.weight AS weighted_max
+        FROM 
+            candidates c
+        LEFT JOIN 
+            scores s ON s.candidate_id = c.id
+        LEFT JOIN 
+            categories cat ON s.category_id = cat.id
+        WHERE 
+            cat.event_id = ($1)
+        GROUP BY
+            c.id, cat.weight
+        ORDER BY 
+            c.candidate_number, c.gender
+        "#,
+    )
+    .bind(&query.event_id)
+    .fetch_all(&pool)
+    .await;
 
     match res {
         Ok(candidates) => {
-            let mut candidate_final_scores: Vec<CandidateFinalScore> =
-                Vec::with_capacity(candidates.len());
+            let mut candidate_final_scores: Vec<CandidateFinalScore2> = Vec::new();
+            let final_scores = calculate_final_scores(&candidates);
 
-            for candidate in candidates.iter() {
+            for (candidate_id, (candidate_name, final_score)) in final_scores {
                 println!(
-                    "Candidate: {} {} {}",
-                    candidate.first_name, candidate.middle_name, candidate.last_name
+                    "Candidate ID: {}, Candidate Name: {}, Final Score: {}",
+                    candidate_id, candidate_name, final_score
                 );
 
-                let final_score =
-                    get_candidate_final_score(&pool, &query.event_id, &candidate.id).await?;
-
-                candidate_final_scores.push(CandidateFinalScore {
-                    candidate_id: candidate.id,
-                    first_name: candidate.first_name.clone(),
-                    middle_name: candidate.middle_name.clone(),
-                    last_name: candidate.last_name.clone(),
+                candidate_final_scores.push(CandidateFinalScore2 {
+                    candidate_id,
+                    candidate_name,
                     final_score,
                 });
             }
@@ -251,6 +295,36 @@ pub async fn get_candidate_final_scores(
     }
 }
 
+fn calculate_final_scores(scores: &Vec<CandidateScore>) -> HashMap<uuid::Uuid, (String, f32)> {
+    let mut candidate_scores: HashMap<uuid::Uuid, (String, f32, f32)> = HashMap::new();
+
+    for score in scores {
+        let candidate_name = format!(
+            "{}, {} {}",
+            score.last_name, score.first_name, score.middle_name
+        )
+        .trim()
+        .to_string();
+
+        let (candidate_name, weighted_scores_sum, weighted_max_sum) = candidate_scores
+            .entry(score.candidate_id)
+            .or_insert((candidate_name, 0.0, 0.0));
+
+        *weighted_scores_sum += score.weighted_score.round_to_two_decimals() as f32;
+        *weighted_max_sum += score.weighted_max.round_to_two_decimals() as f32;
+    }
+
+    let mut final_scores: HashMap<uuid::Uuid, (String, f32)> = HashMap::new();
+
+    for (candidate_id, (candidate_name, weighted_scores_sum, weighted_max_sum)) in candidate_scores
+    {
+        let final_score = (weighted_scores_sum / weighted_max_sum) * 100.0;
+        final_scores.insert(candidate_id, (candidate_name, final_score));
+    }
+
+    final_scores
+}
+
 #[derive(Debug, Deserialize, FromRow)]
 pub struct CategoryWeight {
     id: uuid::Uuid,
@@ -265,46 +339,47 @@ pub struct ScoreMax {
     weighted_max: f64,
 }
 
+// DEPRECATED
 // Calculate the final score to send to the client
-pub async fn get_candidate_final_score(
-    pool: &PgPool,
-    event_id: &uuid::Uuid,
-    candidate_id: &uuid::Uuid,
-) -> Result<f32, AppError> {
-    let scores = sqlx::query_as::<_, ScoreMax>(
-        r#"
-        SELECT 
-            COALESCE(SUM(s.score), 0) AS total_score, 
-            COALESCE(SUM(s.max), 0) AS total_max,
-            COALESCE(SUM(s.score), 0) * cat.weight AS weighted_score,
-            COALESCE(SUM(s.max), 0) * cat.weight AS weighted_max
-        FROM 
-            categories cat
-        LEFT JOIN 
-            scores s ON s.category_id = cat.id AND s.candidate_id = ($1)
-        WHERE 
-            cat.event_id = ($2)
-        GROUP BY
-            cat.id, cat.weight
-        "#,
-    )
-    .bind(candidate_id)
-    .bind(event_id)
-    .fetch_all(pool)
-    .await?;
-
-    let mut weighted_scores_sum: f64 = 0.0;
-    let mut weighted_max_sum: f64 = 0.0;
-
-    for score in scores.iter() {
-        weighted_scores_sum += score.weighted_score.round_to_two_decimals();
-        weighted_max_sum += score.weighted_max.round_to_two_decimals();
-    }
-
-    let final_score = ((weighted_scores_sum / weighted_max_sum) * 100.0) as f32;
-
-    Ok(final_score)
-}
+// pub async fn get_candidate_final_score(
+//     pool: &PgPool,
+//     event_id: &uuid::Uuid,
+//     candidate_id: &uuid::Uuid,
+// ) -> Result<f32, AppError> {
+//     let scores = sqlx::query_as::<_, ScoreMax>(
+//         r#"
+//         SELECT
+//             COALESCE(SUM(s.score), 0) AS total_score,
+//             COALESCE(SUM(s.max), 0) AS total_max,
+//             COALESCE(SUM(s.score), 0) * cat.weight AS weighted_score,
+//             COALESCE(SUM(s.max), 0) * cat.weight AS weighted_max
+//         FROM
+//             categories cat
+//         LEFT JOIN
+//             scores s ON s.category_id = cat.id AND s.candidate_id = ($1)
+//         WHERE
+//             cat.event_id = ($2)
+//         GROUP BY
+//             cat.id, cat.weight
+//         "#,
+//     )
+//     .bind(candidate_id)
+//     .bind(event_id)
+//     .fetch_all(pool)
+//     .await?;
+//
+//     let mut weighted_scores_sum: f64 = 0.0;
+//     let mut weighted_max_sum: f64 = 0.0;
+//
+//     for score in scores.iter() {
+//         weighted_scores_sum += score.weighted_score.round_to_two_decimals();
+//         weighted_max_sum += score.weighted_max.round_to_two_decimals();
+//     }
+//
+//     let final_score = ((weighted_scores_sum / weighted_max_sum) * 100.0) as f32;
+//
+//     Ok(final_score)
+// }
 
 // #[derive(Debug, Deserialize, FromRow)]
 // pub struct Criteria {
@@ -367,6 +442,7 @@ pub async fn foo(
     Ok((http::StatusCode::OK, axum::Json(res)))
 }
 
+// TODO: Change formula
 pub async fn generate_score_spreadsheet(
     State(pool): State<PgPool>,
 ) -> Result<(http::StatusCode, Vec<u8>), AppError> {
@@ -422,7 +498,6 @@ pub async fn generate_score_spreadsheet(
                 )?;
 
                 worksheet.write_with_format(1 + row_offset, 0, "Candidate #", &bold_format)?;
-
                 worksheet.write_with_format(1 + row_offset, 1, "Name", &bold_format)?;
 
                 // Could be improved, it's not necessary to fetch the same judges on the same
