@@ -11,6 +11,7 @@ pub struct Category {
     pub weight: f32,
     // Relationships
     pub event_id: uuid::Uuid,
+    pub is_active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +52,40 @@ pub async fn get_categories(
             .await?;
 
     Ok(axum::Json(categories))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateCategory {
+    category_id: uuid::Uuid
+}
+
+pub async fn update_category(
+    extract::State(pool): extract::State<PgPool>,
+    extract::Path((event_id)): extract::Path<(uuid::Uuid)>,
+    extract::Query((payload)): extract::Query<(UpdateCategory)>,
+) -> Result<axum::Json<Category>, http::StatusCode> {
+    let res = sqlx::query_as::<_, Category>(
+        r#"
+        UPDATE categories
+        SET is_active = CASE
+            WHEN id = $1 and event_id = $2 THEN TRUE
+            ELSE FALSE
+        END
+        RETURNING *;
+        "#,
+    )
+    .bind(&payload.category_id)
+    .bind(&event_id)
+    .fetch_one(&pool)
+    .await;
+
+    match res {
+        Ok(category) => Ok(axum::Json(category)),
+        Err(err) => {
+            eprintln!("Failed to update categories: {err:?}");
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 pub async fn get_category(
