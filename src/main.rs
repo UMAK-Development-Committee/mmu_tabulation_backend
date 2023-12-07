@@ -16,8 +16,8 @@ use axum::{
 use dotenv::dotenv;
 use futures::{sink::SinkExt, stream::StreamExt};
 use sqlx::postgres::PgListener;
-use std::{env, sync::Arc};
-use tokio::sync::broadcast;
+use std::env;
+use tokio::{net::TcpListener, sync::broadcast};
 use tower_http::cors::CorsLayer;
 
 mod error;
@@ -25,49 +25,32 @@ mod handlers;
 
 use handlers::{auth, candidate, category, college, criteria, event, judge, note, score};
 
-struct AppState {
-    // Channel used to send messages to all connected clients.
-    tx: broadcast::Sender<String>,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<(), anyhow::Error> {
     dotenv().ok();
 
-    let (tx, _rx) = broadcast::channel(50);
+    let (tx, _rx): (broadcast::Sender<String>, _) = broadcast::channel(50);
 
     let db_url = env::var("DATABASE_URL").context("DATABASE_URL env not found.")?;
     let ip_addr = env::var("IP_ADDRESS").unwrap_or("127.0.0.1".to_string());
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(50)
-        // .acquire_timeout(std::time::Duration::from_millis(5000))
         .connect(&db_url)
-        .await
-        .context("Couldn't connect to Postgres.")?;
+        .await?;
 
-    // let pool = sqlx::postgres::PgPool::connect(&db_url)
-    //     .await
-    //     .context("Couldn't connect to Postgres.")?;
-    let mut pg_listener = PgListener::connect_with(&pool)
-        .await
-        .context("Couldn't listen to pool.")?;
+    let mut pg_listener = PgListener::connect_with(&pool).await?;
 
-    pg_listener
-        .listen_all(vec!["updates"])
-        .await
-        .context("Couldn't listen to channel.")?;
-
-    let app_state = Arc::new(AppState { tx });
+    pg_listener.listen_all(vec!["updates"]).await?;
 
     println!("\nNow listening to Postgres...\n");
 
-    db_ws_listen(pg_listener, app_state.clone());
+    db_ws_listen(pg_listener, tx.clone());
 
     let app = Router::new()
         // WebSocket
         .route("/ws", get(ws_handler))
-        .with_state(app_state)
+        .with_state(tx)
         .route("/", get(health))
         // Auth
         .route("/login", post(auth::login))
@@ -106,32 +89,23 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
             "/scores",
             post(score::submit_score).get(score::get_candidate_scores),
         )
-        .route(
-            "/scores/update",
-            post(score::update_score)
-        )
+        .route("/scores/update", post(score::update_score))
         .route("/scores/final", get(score::get_candidate_final_scores))
         .route("/scores/download", get(score::generate_score_spreadsheet))
         .route("/notes", post(note::create_note).get(note::get_note))
         .route("/college", get(college::get_colleges))
-        // .layer(
-        //     CorsLayer::new()
-        //         .allow_origin("*".parse::<http::HeaderValue>()?)
-        //         .allow_methods([http::Method::GET, http::Method::POST]),
-        // )
         .layer(CorsLayer::permissive())
         .with_state(pool);
 
-    // for local development (NOT EXPOSURE TO THE NETWORK) it must be [127.0.0.1]
-    let addr = format!("{}:8000", ip_addr);
-    // let addr = SocketAddr::from(([127, 0, 0, 1], 8000));
-    // let addr = SocketAddr::from(([192, 168, 1, 177], 8000));
+    // For local development (NOT EXPOSURE TO THE NETWORK) it must be [127.0.0.1]
+    let listener = TcpListener::bind(format!("{}:8000", ip_addr)).await?;
 
-    println!("Server has started, listening on: {}\n", addr);
+    println!(
+        "Server has started, listening on: {:?}\n",
+        listener.local_addr()?
+    );
 
-    axum::Server::bind(&addr.parse()?)
-        .serve(app.into_make_service())
-        .await?;
+    axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
 }
@@ -141,7 +115,7 @@ async fn health() -> (http::StatusCode, String) {
 }
 
 // Listen to the database in real-time and send the notification to the websocket
-fn db_ws_listen(mut pg_listener: PgListener, app_state: Arc<AppState>) {
+fn db_ws_listen(mut pg_listener: PgListener, tx: broadcast::Sender<String>) {
     tokio::spawn(async move {
         loop {
             while let Some(notification) = pg_listener
@@ -152,10 +126,8 @@ fn db_ws_listen(mut pg_listener: PgListener, app_state: Arc<AppState>) {
             {
                 let payload = notification.payload();
 
-                app_state
-                    .tx
-                    .send(payload.to_string())
-                    .context("Failed to send payload")
+                tx.send(payload.to_string())
+                    .context("Failed to send payload.")
                     .unwrap();
 
                 println!("Notification:\n{payload:?}\n");
@@ -166,14 +138,17 @@ fn db_ws_listen(mut pg_listener: PgListener, app_state: Arc<AppState>) {
     });
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<broadcast::Sender<String>>,
+) -> Response {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+async fn handle_socket(socket: WebSocket, tx: broadcast::Sender<String>) {
     let (mut sender, mut receiver) = socket.split();
 
-    let mut rx = state.tx.subscribe();
+    let mut rx = tx.subscribe();
 
     // Spawn the first task that will receive broadcast messages and send text messages over the websocket to our client.
     let mut send_task = tokio::spawn(async move {
@@ -184,13 +159,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
-    let tx = state.tx.clone();
-
     // Spawn a task that takes messages from the websocket and sends them to all broadcast subscribers.
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(Message::Text(event))) = receiver.next().await {
-            println!("{event}");
-            let _ = tx.send(event);
+            println!("Sending Event:\n{event}\n");
+
+            tx.send(event).unwrap();
         }
     });
 
