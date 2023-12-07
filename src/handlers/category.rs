@@ -49,7 +49,7 @@ pub async fn create_category(
 
 pub async fn get_categories(
     extract::State(pool): extract::State<PgPool>,
-    extract::Path(event_id): extract::Path<uuid::Uuid>,
+    extract::Path(event_id): extract::Path<uuid::Uuid>
 ) -> Result<axum::Json<Vec<Category>>, http::StatusCode> {
     let res = sqlx::query_as::<_, Category>("SELECT * FROM categories WHERE event_id = ($1)")
         .bind(&event_id)
@@ -65,10 +65,38 @@ pub async fn get_categories(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateCategory {
+    category_id: uuid::Uuid
+}
+
 pub async fn update_category(
     extract::State(pool): extract::State<PgPool>,
-    extract::Path((event_id, category_id)): extract::Path<(uuid::Uuid, uuid::Uuid)>,
+    extract::Path((event_id)): extract::Path<(uuid::Uuid)>,
+    extract::Query((payload)): extract::Query<(UpdateCategory)>,
 ) -> Result<axum::Json<Category>, http::StatusCode> {
+    let res = sqlx::query_as::<_, Category>(
+        r#"
+        UPDATE categories
+        SET is_active = CASE
+            WHEN id = $1 and event_id = $2 THEN TRUE
+            ELSE FALSE
+        END
+        RETURNING *;
+        "#,
+    )
+    .bind(&payload.category_id)
+    .bind(&event_id)
+    .fetch_one(&pool)
+    .await;
+
+    match res {
+        Ok(category) => Ok(axum::Json(category)),
+        Err(err) => {
+            eprintln!("Failed to update categories: {err:?}");
+            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 pub async fn get_category(

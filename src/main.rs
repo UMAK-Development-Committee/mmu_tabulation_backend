@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
         // Categories
         .route(
             "/events/:event_id/categories",
-            post(category::create_category).get(category::get_categories),
+            post(category::create_category).get(category::get_categories).put(category::update_category),
         )
         .route(
             "/events/:event_id/categories/:category_id",
