@@ -24,7 +24,7 @@ pub async fn create_category(
     extract::Path(event_id): extract::Path<uuid::Uuid>,
     axum::Json(payload): axum::Json<CreateCategory>,
 ) -> Result<(http::StatusCode, axum::Json<Category>), AppError> {
-    let res = sqlx::query_as::<_, Category>(
+    let category = sqlx::query_as::<_, Category>(
         r#"
         INSERT INTO categories (name, weight, event_id) 
         VALUES ($1, $2, $3)
@@ -35,52 +35,35 @@ pub async fn create_category(
     .bind(&payload.weight)
     .bind(&event_id)
     .fetch_one(&pool)
-    .await;
+    .await?;
 
-    match res {
-        Ok(category) => Ok((http::StatusCode::CREATED, axum::Json(category))),
-        Err(err) => Err(AppError::new(
-            http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create category: {}", err),
-        )),
-    }
+    Ok((http::StatusCode::CREATED, axum::Json(category)))
 }
 
 pub async fn get_categories(
     extract::State(pool): extract::State<PgPool>,
     extract::Path(event_id): extract::Path<uuid::Uuid>,
-) -> Result<axum::Json<Vec<Category>>, http::StatusCode> {
-    let res = sqlx::query_as::<_, Category>("SELECT * FROM categories WHERE event_id = ($1)")
-        .bind(&event_id)
-        .fetch_all(&pool)
-        .await;
+) -> Result<axum::Json<Vec<Category>>, AppError> {
+    let categories =
+        sqlx::query_as::<_, Category>("SELECT * FROM categories WHERE event_id = ($1)")
+            .bind(&event_id)
+            .fetch_all(&pool)
+            .await?;
 
-    match res {
-        Ok(categories) => Ok(axum::Json(categories)),
-        Err(err) => {
-            eprintln!("Failed to get categories: {err:?}");
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+    Ok(axum::Json(categories))
 }
 
 pub async fn get_category(
     extract::State(pool): extract::State<PgPool>,
     extract::Path((event_id, category_id)): extract::Path<(uuid::Uuid, uuid::Uuid)>,
-) -> Result<axum::Json<Category>, http::StatusCode> {
-    let res = sqlx::query_as::<_, Category>(
+) -> Result<axum::Json<Category>, AppError> {
+    let category = sqlx::query_as::<_, Category>(
         "SELECT * FROM categories WHERE event_id = ($1) AND id = ($2)",
     )
     .bind(event_id)
     .bind(category_id)
     .fetch_one(&pool)
-    .await;
+    .await?;
 
-    match res {
-        Ok(category) => Ok(axum::Json(category)),
-        Err(err) => {
-            eprintln!("Failed to get categories: {err:?}");
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+    Ok(axum::Json(category))
 }

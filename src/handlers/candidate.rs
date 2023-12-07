@@ -35,7 +35,7 @@ pub async fn create_candidate(
     State(pool): State<PgPool>,
     axum::Json(payload): axum::Json<CreateCandidate>,
 ) -> Result<(http::StatusCode, axum::Json<Candidate>), AppError> {
-    let res = sqlx::query_as::<_, Candidate>(
+    let candidate = sqlx::query_as::<_, Candidate>(
         r#"
         INSERT INTO candidates (first_name, middle_name, last_name, birthdate, gender, college, category_id) 
         VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -50,50 +50,29 @@ pub async fn create_candidate(
     .bind(&payload.college_id)
     .bind(&payload.category_id)
     .fetch_one(&pool)
-    .await;
+    .await?;
 
-    match res {
-        Ok(candidate) => Ok((http::StatusCode::CREATED, axum::Json(candidate))),
-        Err(err) => {
-            eprintln!("Failed to create candidate: {err:?}");
-            Err(AppError::new(
-                http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to create candidate: {}", err),
-            ))
-        }
-    }
+    Ok((http::StatusCode::CREATED, axum::Json(candidate)))
 }
 
 pub async fn get_candidates(
     State(pool): State<PgPool>,
 ) -> Result<axum::Json<Vec<Candidate>>, AppError> {
-    let res = sqlx::query_as::<_, Candidate>("SELECT * FROM candidates")
+    let candidates = sqlx::query_as::<_, Candidate>("SELECT * FROM candidates")
         .fetch_all(&pool)
-        .await;
+        .await?;
 
-    match res {
-        Ok(candidates) => Ok(axum::Json(candidates)),
-        Err(err) => Err(AppError::new(
-            http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get candidates: {}", err),
-        )),
-    }
+    Ok(axum::Json(candidates))
 }
 
 pub async fn get_candidate(
     State(pool): State<PgPool>,
     Path(candidate_id): Path<uuid::Uuid>,
-) -> Result<axum::Json<Candidate>, http::StatusCode> {
-    let res = sqlx::query_as::<_, Candidate>("SELECT * FROM candidates WHERE id = ($1)")
+) -> Result<axum::Json<Candidate>, AppError> {
+    let candidate = sqlx::query_as::<_, Candidate>("SELECT * FROM candidates WHERE id = ($1)")
         .bind(&candidate_id)
         .fetch_one(&pool)
-        .await;
+        .await?;
 
-    match res {
-        Ok(candidate) => Ok(axum::Json(candidate)),
-        Err(err) => {
-            eprintln!("Failed to get candidate: {err:?}");
-            Err(http::StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+    Ok(axum::Json(candidate))
 }

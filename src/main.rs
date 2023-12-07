@@ -94,8 +94,6 @@ async fn main() -> anyhow::Result<(), anyhow::Error> {
         .route("/scores/download", get(score::generate_score_spreadsheet))
         .route("/notes", post(note::create_note).get(note::get_note))
         .route("/college", get(college::get_colleges))
-        // EXPERIMENTAL
-        .route("/scores/foo", get(score::foo))
         .layer(CorsLayer::permissive())
         .with_state(pool);
 

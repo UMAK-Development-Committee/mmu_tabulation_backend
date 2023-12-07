@@ -8,11 +8,10 @@ use chrono::Local;
 use rust_xlsxwriter::*;
 use serde::{Deserialize, Serialize};
 use sqlx::query::QueryAs;
-use sqlx::{FromRow, PgPool};
+use sqlx::{FromRow, PgPool, Row};
 
 use crate::error::AppError;
 
-use super::candidate::Candidate;
 use super::category::Category;
 use super::criteria::Criteria;
 use super::event::Event;
@@ -400,118 +399,13 @@ pub struct CriteriaScore {
 }
 
 #[derive(Debug, FromRow)]
-pub struct JudgeName {
-    judge_name: String,
-}
-
-// EXPERIMENTAL
-pub async fn foo(State(pool): State<PgPool>) -> Result<(http::StatusCode, Vec<u8>), AppError> {
-    let events = sqlx::query_as::<_, (uuid::Uuid, String)>("SELECT id, name FROM events")
-        .fetch_all(&pool)
-        .await?;
-
-    let mut workbook = Workbook::new();
-    let worksheet = workbook.add_worksheet();
-
-    let heading_format = Format::new().set_font_size(13.5).set_bold();
-    let bold_format = Format::new().set_bold().set_align(FormatAlign::Center);
-    let mut row_offset: u32 = 0;
-
-    worksheet.set_column_width(0, 15)?;
-    worksheet.set_column_width(1, 30)?;
-
-    let candidates = sqlx::query_as::<_, (String, String, String, i32)>(
-        r#"
-        SELECT first_name, middle_name, last_name, gender FROM candidates 
-        ORDER BY 
-            CASE
-                WHEN gender = 1 THEN 1
-                ELSE 2
-            END,
-            candidate_number
-        "#,
-    )
-    .fetch_all(&pool)
-    .await?;
-
-    // Could use the Rayon crate for parallelization, but no need
-    let (male_candidates, female_candidates): (
-        Vec<&(String, String, String, i32)>,
-        Vec<&(String, String, String, i32)>,
-    ) = candidates
-        .iter()
-        .partition(|(_, _, _, gender)| *gender == 1);
-
-    for (event_id, event_name) in events.iter() {
-        worksheet.merge_range(row_offset, 0, row_offset, 6, event_name, &heading_format)?;
-
-        // IMPROVEMENT: Use String instead of a struct, but String doesn't implement FromRow
-        let judges = sqlx::query_as::<_, JudgeName>(
-            "SELECT name as judge_name FROM judges WHERE event_id = ($1) AND score_exclusion = FALSE",
-        )
-        .bind(event_id)
-        .fetch_all(&pool)
-        .await?;
-
-        let categories = sqlx::query_as::<_, (uuid::Uuid, String)>(
-            "SELECT id, name FROM categories WHERE event_id = ($1)",
-        )
-        .bind(event_id)
-        .fetch_all(&pool)
-        .await?;
-
-        for (category_idx, (category_id, category_name)) in categories.iter().enumerate() {
-            worksheet.write_with_format(
-                row_offset + 2 + category_idx as u32,
-                0,
-                category_name,
-                &bold_format,
-            );
-
-            let criterias = sqlx::query_as::<_, (uuid::Uuid, String, i32)>(
-                "SELECT id, name, max_score FROM criterias WHERE category_id = ($1)",
-            )
-            .bind(category_id)
-            .fetch_all(&pool)
-            .await?;
-
-            for (criteria_idx, (criteria_id, criteria_name, max_score)) in
-                criterias.iter().enumerate()
-            {
-                // Loop over judges and candidates
-                // Get the score of each judge for each candidate
-
-                worksheet.write(row_offset + 2 + criteria_idx as u32, 0, criteria_name);
-                //
-                // for (judge_idx, judge) in judges.iter().enumerate() {
-                //     worksheet.set_column_width(judge_idx as u16 + 2, 30)?;
-                //     worksheet.write_with_format(
-                //         1 + row_offset,
-                //         2 + judge_idx as u16,
-                //         &judge.judge_name,
-                //         &bold_format,
-                //     )?;
-                // }
-            }
-
-            row_offset += 2 + criterias.len() as u32;
-        }
-
-        row_offset += 5;
-    }
-
-    let workbook_buffer = workbook.save_to_buffer()?;
-
-    Ok((http::StatusCode::OK, workbook_buffer))
-}
-
-async fn foo2(
-    pool: &PgPool,
-    worksheet: &mut Worksheet,
-    candidates: &Vec<&(String, String, String, i32)>,
-    (criteria_id, criteria_name, max_score): (&uuid::Uuid, &String, &i32),
-) -> Result<(), AppError> {
-    todo!()
+struct Candidate {
+    pub id: uuid::Uuid,
+    pub first_name: String,
+    pub middle_name: String,
+    pub last_name: String,
+    pub gender: i32,
+    pub candidate_number: i32,
 }
 
 // TODO: Change formula
@@ -535,7 +429,7 @@ pub async fn generate_score_spreadsheet(
 
     let candidates = sqlx::query_as::<_, Candidate>(
         r#"
-        SELECT * FROM candidates 
+        SELECT id, first_name, middle_name, last_name, gender, candidate_number FROM candidates 
         ORDER BY 
             CASE
                 WHEN gender = 1 THEN 1
@@ -553,10 +447,6 @@ pub async fn generate_score_spreadsheet(
         .partition(|candidate| candidate.gender == 1);
 
     for (category_idx, category) in categories.iter().enumerate() {
-        // if category_idx == 1 {
-        //     break;
-        // }
-
         worksheet.merge_range(
             row_offset,
             0,
@@ -572,32 +462,35 @@ pub async fn generate_score_spreadsheet(
         // Could be improved, it's not necessary to fetch the same judges on the same
         // event_id
         // Could use a Hashmap wherein the event_id is they key and the vector of judges
-        // are the values
-        let judges = sqlx::query_as::<_, Judge>("SELECT * FROM judges WHERE event_id = ($1)")
-            .bind(&category.event_id)
-            .fetch_all(&pool)
-            .await?;
+        // are the values after fetching every judge per event in one SQL query
+        let judges = sqlx::query_as::<_, (uuid::Uuid, String)>(
+            "SELECT id, name FROM judges WHERE event_id = ($1) AND score_exclusion = FALSE",
+        )
+        .bind(&category.event_id)
+        .fetch_all(&pool)
+        .await?;
 
         // Write judge names
-        for (i, judge) in judges.iter().enumerate() {
+        for (i, (_, judge_name)) in judges.iter().enumerate() {
+            // Set column width should only be done once
             worksheet.set_column_width(i as u16 + 2, 30)?;
-            worksheet.write_with_format(1 + row_offset, i as u16 + 2, &judge.name, &bold_format)?;
+            worksheet.write_with_format(1 + row_offset, i as u16 + 2, judge_name, &bold_format)?;
         }
 
         worksheet.set_column_width(judges.len() as u16 + 2, 20)?;
-        worksheet.set_column_width(judges.len() as u16 + 3, 15)?;
+        worksheet.set_column_width(judges.len() as u16 + 3, 30)?;
 
         worksheet.write_with_format(
             1 + row_offset,
             judges.len() as u16 + 2,
-            "Average Score",
+            "Total Score",
             &bold_format,
         )?;
 
         worksheet.write_with_format(
             1 + row_offset,
             judges.len() as u16 + 3,
-            format!("{}%", category.weight * 100.0),
+            format!("Weighted Score ({}%)", category.weight * 100.0),
             &bold_format,
         )?;
 
@@ -642,7 +535,7 @@ async fn write_scores(
     worksheet: &mut Worksheet,
     candidates: &Vec<&Candidate>,
     category: &Category,
-    judges: &Vec<Judge>,
+    judges: &Vec<(uuid::Uuid, String)>,
     row: RowNum,
     col: ColNum,
 ) -> Result<(), AppError> {
@@ -667,41 +560,39 @@ async fn write_scores(
         let mut total_score: f32 = 0.0;
 
         // Write candidate scores
-        for (judge_idx, judge) in judges.iter().enumerate() {
+        for (judge_idx, (judge_id, _)) in judges.iter().enumerate() {
             // Could be improved
             // Use SQL to get the sum instead
-            let scores = sqlx::query_as::<_, Score>(
-                "SELECT * FROM scores WHERE candidate_id = ($1) AND category_id = ($2) AND judge_id = ($3)",
+            let judge_total_score: i64 = sqlx::query_scalar(
+                r#"
+                SELECT COALESCE(SUM(score), 0) as judge_total_score 
+                FROM scores 
+                WHERE candidate_id = ($1) AND category_id = ($2) AND judge_id = ($3)
+                "#,
             )
             .bind(candidate.id)
             .bind(category.id)
-            .bind(judge.id)
-            .fetch_all(pool)
+            .bind(judge_id)
+            .fetch_one(pool)
             .await?;
 
-            let total_score_for_judge: i32 =
-                scores.into_iter().fold(0, |acc, score| acc + score.score);
-
-            total_score += total_score_for_judge as f32;
+            total_score += judge_total_score as f32;
 
             worksheet.write(
                 row + candidate_idx as u32,
                 col + 2 + judge_idx as u16,
-                total_score_for_judge,
+                judge_total_score as i32,
             )?;
         }
 
-        let average_score: f32 = total_score / judges.len() as f32;
-        let score_in_percentage: f32 = average_score * category.weight;
+        let score_in_percentage: f32 = total_score * category.weight;
 
-        // Write candidate average scores
         worksheet.write(
             row + candidate_idx as u32,
             col + 2 + judges.len() as u16,
-            format!("{:.2}", average_score),
+            format!("{:.2}", total_score),
         )?;
 
-        // Write candidate average scores in percentage
         worksheet.write(
             row + candidate_idx as u32,
             col + 3 + judges.len() as u16,
@@ -719,115 +610,205 @@ async fn write_scores(
 pub async fn generate_csv(
     State(pool): State<PgPool>,
 ) -> Result<(http::StatusCode, Vec<u8>), AppError> {
-    let res = sqlx::query_as::<_, Category>("SELECT id, name, weight FROM categories")
+    let categories = sqlx::query_as::<_, Category>("SELECT id, name, weight FROM categories")
         .fetch_all(&pool)
-        .await;
+        .await?;
 
-    match res {
-        Ok(categories) => {
-            let mut csv_writer = csv::Writer::from_writer(Vec::new());
+    let mut csv_writer = csv::Writer::from_writer(Vec::new());
 
-            let headers = [
-                "Event",
-                "Category",
-                "Criteria",
-                "Candidate First Name",
-                "Candidate Middle Name",
-                "Candidate Last Name",
-                "Judge",
-                "Score",
-                "Max",
-                "Weight",
-            ];
+    let headers = [
+        "Event",
+        "Category",
+        "Criteria",
+        "Candidate First Name",
+        "Candidate Middle Name",
+        "Candidate Last Name",
+        "Judge",
+        "Score",
+        "Max",
+        "Weight",
+    ];
 
-            csv_writer.write_record(&headers).map_err(|err| {
-                AppError::new(
-                    http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to write record for headers: {}", err),
-                )
-            })?;
+    csv_writer.write_record(&headers).map_err(|err| {
+        AppError::new(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to write record for headers: {}", err),
+        )
+    })?;
 
-            for category in categories.iter() {
-                let criterias = sqlx::query_as::<_, CriteriaIdName>(
-                    "SELECT id, name FROM criterias WHERE category_id = $1",
-                )
-                .bind(category.id)
-                .fetch_all(&pool)
-                .await
-                .map_err(|err| {
-                    AppError::new(
-                        http::StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to get criterias: {}", err),
-                    )
-                })?;
+    for category in categories.iter() {
+        let criterias = sqlx::query_as::<_, CriteriaIdName>(
+            "SELECT id, name FROM criterias WHERE category_id = ($1)",
+        )
+        .bind(category.id)
+        .fetch_all(&pool)
+        .await?;
 
-                for criteria in criterias.iter() {
-                    let scores = sqlx::query_as::<_, CriteriaScore>(
-                        r#"
-                        SELECT s.score, s.max, j.name as judge_name,
-                            can.first_name as candidate_first_name,
-                            can.middle_name as candidate_middle_name,
-                            can.last_name as candidate_last_name,
-                            cat.weight as weight,
-                            e.name as event_name
-                        FROM scores s
-                        JOIN judges j ON j.id = s.judge_id
-                        JOIN candidates can ON can.id = s.candidate_id
-                        JOIN categories cat ON cat.id = s.category_id
-                        JOIN events e ON e.id = cat.event_id
-                        WHERE s.category_id = ($1) AND s.criteria_id = ($2)
-                        "#,
-                    )
-                    .bind(category.id)
-                    .bind(criteria.id)
-                    .fetch_all(&pool)
-                    .await
+        for criteria in criterias.iter() {
+            let scores = sqlx::query_as::<_, CriteriaScore>(
+                r#"
+                SELECT s.score, s.max, j.name as judge_name,
+                    can.first_name as candidate_first_name,
+                    can.middle_name as candidate_middle_name,
+                    can.last_name as candidate_last_name,
+                    cat.weight as weight,
+                    e.name as event_name
+                FROM scores s
+                JOIN judges j ON j.id = s.judge_id
+                JOIN candidates can ON can.id = s.candidate_id
+                JOIN categories cat ON cat.id = s.category_id
+                JOIN events e ON e.id = cat.event_id
+                WHERE s.category_id = ($1) AND s.criteria_id = ($2)
+                "#,
+            )
+            .bind(category.id)
+            .bind(criteria.id)
+            .fetch_all(&pool)
+            .await?;
+
+            for score in scores.iter() {
+                csv_writer
+                    .write_record(vec![
+                        &score.event_name,
+                        &category.name,
+                        &criteria.name,
+                        &score.candidate_first_name,
+                        &score.candidate_middle_name,
+                        &score.candidate_last_name,
+                        &score.judge_name,
+                        &score.score.to_string(),
+                        &score.max.to_string(),
+                        &score.weight.to_string(),
+                    ])
                     .map_err(|err| {
                         AppError::new(
                             http::StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("Failed to get scores: {}", err),
+                            format!("Failed to serialize record: {}", err),
                         )
                     })?;
-
-                    for score in scores.iter() {
-                        csv_writer
-                            .write_record(vec![
-                                &score.event_name,
-                                &category.name,
-                                &criteria.name,
-                                &score.candidate_first_name,
-                                &score.candidate_middle_name,
-                                &score.candidate_last_name,
-                                &score.judge_name,
-                                &score.score.to_string(),
-                                &score.max.to_string(),
-                                &score.weight.to_string(),
-                            ])
-                            .map_err(|err| {
-                                AppError::new(
-                                    http::StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!("Failed to serialize record: {}", err),
-                                )
-                            })?;
-                    }
-                }
             }
-
-            let csv_bytes = csv_writer.into_inner().map_err(|err| {
-                AppError::new(
-                    http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format! {"Failed to generate CSV file: {}", err},
-                )
-            })?;
-
-            Ok((http::StatusCode::OK, csv_bytes))
         }
-        Err(err) => Err(AppError::new(
-            http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get categories: {}", err),
-        )),
     }
+
+    let csv_bytes = csv_writer.into_inner().map_err(|err| {
+        AppError::new(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format! {"Failed to generate CSV file: {}", err},
+        )
+    })?;
+
+    Ok((http::StatusCode::OK, csv_bytes))
 }
+
+// EXPERIMENTAL
+// pub async fn foo(State(pool): State<PgPool>) -> Result<(http::StatusCode, Vec<u8>), AppError> {
+//     let events = sqlx::query_as::<_, (uuid::Uuid, String)>("SELECT id, name FROM events")
+//         .fetch_all(&pool)
+//         .await?;
+//
+//     let mut workbook = Workbook::new();
+//     let worksheet = workbook.add_worksheet();
+//
+//     let heading_format = Format::new().set_font_size(13.5).set_bold();
+//     let bold_format = Format::new().set_bold().set_align(FormatAlign::Center);
+//     let mut row_offset: u32 = 0;
+//
+//     worksheet.set_column_width(0, 15)?;
+//     worksheet.set_column_width(1, 30)?;
+//
+//     let candidates = sqlx::query_as::<_, (String, String, String, i32)>(
+//         r#"
+//         SELECT first_name, middle_name, last_name, gender FROM candidates
+//         ORDER BY
+//             CASE
+//                 WHEN gender = 1 THEN 1
+//                 ELSE 2
+//             END,
+//             candidate_number
+//         "#,
+//     )
+//     .fetch_all(&pool)
+//     .await?;
+//
+//     // Could use the Rayon crate for parallelization, but no need
+//     let (male_candidates, female_candidates): (
+//         Vec<&(String, String, String, i32)>,
+//         Vec<&(String, String, String, i32)>,
+//     ) = candidates
+//         .iter()
+//         .partition(|(_, _, _, gender)| *gender == 1);
+//
+//     for (event_id, event_name) in events.iter() {
+//         worksheet.merge_range(row_offset, 0, row_offset, 6, event_name, &heading_format)?;
+//
+//         // IMPROVEMENT: Use String instead of a struct, but String doesn't implement FromRow
+//         let judges = sqlx::query_as::<_, JudgeName>(
+//             "SELECT name as judge_name FROM judges WHERE event_id = ($1) AND score_exclusion = FALSE",
+//         )
+//         .bind(event_id)
+//         .fetch_all(&pool)
+//         .await?;
+//
+//         let categories = sqlx::query_as::<_, (uuid::Uuid, String)>(
+//             "SELECT id, name FROM categories WHERE event_id = ($1)",
+//         )
+//         .bind(event_id)
+//         .fetch_all(&pool)
+//         .await?;
+//
+//         for (category_idx, (category_id, category_name)) in categories.iter().enumerate() {
+//             worksheet.write_with_format(
+//                 row_offset + 2 + category_idx as u32,
+//                 0,
+//                 category_name,
+//                 &bold_format,
+//             );
+//
+//             let criterias = sqlx::query_as::<_, (uuid::Uuid, String, i32)>(
+//                 "SELECT id, name, max_score FROM criterias WHERE category_id = ($1)",
+//             )
+//             .bind(category_id)
+//             .fetch_all(&pool)
+//             .await?;
+//
+//             for (criteria_idx, (criteria_id, criteria_name, max_score)) in
+//                 criterias.iter().enumerate()
+//             {
+//                 // Loop over judges and candidates
+//                 // Get the score of each judge for each candidate
+//
+//                 worksheet.write(row_offset + 2 + criteria_idx as u32, 0, criteria_name);
+//                 //
+//                 // for (judge_idx, judge) in judges.iter().enumerate() {
+//                 //     worksheet.set_column_width(judge_idx as u16 + 2, 30)?;
+//                 //     worksheet.write_with_format(
+//                 //         1 + row_offset,
+//                 //         2 + judge_idx as u16,
+//                 //         &judge.judge_name,
+//                 //         &bold_format,
+//                 //     )?;
+//                 // }
+//             }
+//
+//             row_offset += 2 + criterias.len() as u32;
+//         }
+//
+//         row_offset += 5;
+//     }
+//
+//     let workbook_buffer = workbook.save_to_buffer()?;
+//
+//     Ok((http::StatusCode::OK, workbook_buffer))
+// }
+//
+// async fn foo2(
+//     pool: &PgPool,
+//     worksheet: &mut Worksheet,
+//     candidates: &Vec<&(String, String, String, i32)>,
+//     (criteria_id, criteria_name, max_score): (&uuid::Uuid, &String, &i32),
+// ) -> Result<(), AppError> {
+//     todo!()
+// }
 
 // let judges =
 //     sqlx::query_as::<_, Judge>("SELECT * FROM judges WHERE event_id = ($1)")
