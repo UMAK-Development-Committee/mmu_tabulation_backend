@@ -7,7 +7,7 @@ use sqlx::{FromRow, PgPool};
 
 use crate::error::AppError;
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct Candidate {
     pub id: uuid::Uuid,
     pub first_name: String,
@@ -16,6 +16,7 @@ pub struct Candidate {
     pub gender: i32,
     pub college_id: String,
     pub candidate_number: i32,
+    pub final_score: f32,
     // Relationships
     pub category_id: uuid::Uuid,
 }

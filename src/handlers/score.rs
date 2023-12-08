@@ -211,6 +211,7 @@ pub struct CandidateFinalScore {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CandidateFinalScore2 {
     candidate_id: uuid::Uuid,
+    candidate_number: i32,
     candidate_name: String,
     final_score: f32,
 }
@@ -218,9 +219,11 @@ pub struct CandidateFinalScore2 {
 #[derive(Debug, Deserialize, Serialize, FromRow)]
 pub struct CandidateScore {
     candidate_id: uuid::Uuid,
+    candidate_number: i32,
     first_name: String,
     middle_name: String,
     last_name: String,
+    gender: i32,
     total_score: i64,
     total_max: i64,
     weighted_score: f64,
@@ -232,15 +235,26 @@ pub struct CandidateScore {
 // TODO: Calculate score for all events
 pub async fn get_candidate_final_scores(
     State(pool): State<PgPool>,
-    Query(query): Query<FinalScoreParam>,
 ) -> Result<axum::Json<Vec<CandidateFinalScore2>>, AppError> {
+    let final_scores = get_candidate_final_scores2(State(pool)).await?;
+
+    Ok(axum::Json(final_scores))
+}
+
+// Give this a better name
+pub async fn get_candidate_final_scores2(
+    State(pool): State<PgPool>,
+    // Query(query): Query<FinalScoreParam>,
+) -> Result<Vec<CandidateFinalScore2>, AppError> {
     let res = sqlx::query_as::<_, CandidateScore>(
         r#"
         SELECT 
             c.id AS candidate_id,
+            c.candidate_number,
             c.first_name,
             c.middle_name,
             c.last_name,
+            c.gender,
             COALESCE(SUM(s.score), 0) AS total_score, 
             COALESCE(SUM(s.max), 0) AS total_max,
             COALESCE(SUM(s.score), 0) * cat.weight AS weighted_score,
@@ -251,37 +265,49 @@ pub async fn get_candidate_final_scores(
             scores s ON s.candidate_id = c.id
         LEFT JOIN 
             categories cat ON s.category_id = cat.id
-        WHERE 
-            cat.event_id = ($1)
         GROUP BY
             c.id, cat.weight
         ORDER BY 
-            c.candidate_number, c.gender
+            CASE 
+                WHEN c.gender = 1 THEN 1
+                ELSE 2
+            END,
+            c.candidate_number
         "#,
     )
-    .bind(&query.event_id)
+    // .bind(&query.event_id)
     .fetch_all(&pool)
     .await;
 
     match res {
         Ok(candidates) => {
             let mut candidate_final_scores: Vec<CandidateFinalScore2> = Vec::new();
-            let final_scores = calculate_final_scores(&candidates);
+            let final_scores = calculate_final_scores(&candidates, true);
 
-            for (candidate_id, (candidate_name, final_score)) in final_scores {
+            for (candidate_id, (candidate_number, gender, candidate_name, final_score)) in
+                final_scores
+            {
+                // Use a transaction instead
+                sqlx::query("UPDATE candidates SET final_score = ($1) WHERE id = ($2)")
+                    .bind(final_score)
+                    .bind(candidate_id)
+                    .execute(&pool)
+                    .await?;
+
                 println!(
-                    "Candidate ID: {}, Candidate Name: {}, Final Score: {}",
-                    candidate_id, candidate_name, final_score
+                    "Candidate #: {}, Candidate Name: {}, Final Score: {}",
+                    candidate_number, candidate_name, final_score
                 );
 
                 candidate_final_scores.push(CandidateFinalScore2 {
                     candidate_id,
+                    candidate_number,
                     candidate_name,
                     final_score,
                 });
             }
 
-            Ok(axum::Json(candidate_final_scores))
+            Ok(candidate_final_scores)
         }
         Err(err) => {
             eprintln!("Failed to get candidates when computing scores: {err:?}");
@@ -294,34 +320,59 @@ pub async fn get_candidate_final_scores(
     }
 }
 
-fn calculate_final_scores(scores: &Vec<CandidateScore>) -> HashMap<uuid::Uuid, (String, f32)> {
-    let mut candidate_scores: HashMap<uuid::Uuid, (String, f32, f32)> = HashMap::new();
+// Tuples here could be structs
+fn calculate_final_scores(
+    scores: &Vec<CandidateScore>,
+    sort: bool,
+) -> Vec<(uuid::Uuid, (i32, i32, String, f32))> {
+    let mut candidate_scores: HashMap<uuid::Uuid, (i32, i32, String, f32, f32)> = HashMap::new();
 
     for score in scores {
         let candidate_name = format!(
             "{}, {} {}",
-            score.last_name, score.first_name, score.middle_name
+            score.last_name.trim(),
+            score.first_name.trim(),
+            score.middle_name.trim()
         )
         .trim()
         .to_string();
 
-        let (candidate_name, weighted_scores_sum, weighted_max_sum) = candidate_scores
-            .entry(score.candidate_id)
-            .or_insert((candidate_name, 0.0, 0.0));
+        let (candidate_number, gender, candidate_name, weighted_scores_sum, weighted_max_sum) =
+            candidate_scores.entry(score.candidate_id).or_insert((
+                score.candidate_number,
+                score.gender,
+                candidate_name,
+                0.0,
+                0.0,
+            ));
 
         *weighted_scores_sum += score.weighted_score.round_to_two_decimals() as f32;
         *weighted_max_sum += score.weighted_max.round_to_two_decimals() as f32;
     }
 
-    let mut final_scores: HashMap<uuid::Uuid, (String, f32)> = HashMap::new();
+    // Very bad code (I think) xD
+    let mut final_scores: HashMap<uuid::Uuid, (i32, i32, String, f32)> = HashMap::new();
 
-    for (candidate_id, (candidate_name, weighted_scores_sum, weighted_max_sum)) in candidate_scores
+    for (
+        candidate_id,
+        (candidate_number, gender, candidate_name, weighted_scores_sum, weighted_max_sum),
+    ) in candidate_scores.into_iter()
     {
         let final_score = (weighted_scores_sum / weighted_max_sum) * 100.0;
-        final_scores.insert(candidate_id, (candidate_name, final_score));
+        final_scores.insert(
+            candidate_id,
+            (candidate_number, gender, candidate_name, final_score),
+        );
     }
 
-    final_scores
+    let mut sorted_final_scores: Vec<_> = final_scores.clone().into_iter().collect();
+
+    if sort {
+        // Sory by candidate number because it gets messed up
+        sorted_final_scores.sort_by(|(_, (a, _, _, _)), (_, (b, _, _, _))| a.cmp(b));
+    }
+
+    sorted_final_scores
 }
 
 #[derive(Debug, Deserialize, FromRow)]
@@ -337,48 +388,6 @@ pub struct ScoreMax {
     weighted_score: f64,
     weighted_max: f64,
 }
-
-// DEPRECATED
-// Calculate the final score to send to the client
-// pub async fn get_candidate_final_score(
-//     pool: &PgPool,
-//     event_id: &uuid::Uuid,
-//     candidate_id: &uuid::Uuid,
-// ) -> Result<f32, AppError> {
-//     let scores = sqlx::query_as::<_, ScoreMax>(
-//         r#"
-//         SELECT
-//             COALESCE(SUM(s.score), 0) AS total_score,
-//             COALESCE(SUM(s.max), 0) AS total_max,
-//             COALESCE(SUM(s.score), 0) * cat.weight AS weighted_score,
-//             COALESCE(SUM(s.max), 0) * cat.weight AS weighted_max
-//         FROM
-//             categories cat
-//         LEFT JOIN
-//             scores s ON s.category_id = cat.id AND s.candidate_id = ($1)
-//         WHERE
-//             cat.event_id = ($2)
-//         GROUP BY
-//             cat.id, cat.weight
-//         "#,
-//     )
-//     .bind(candidate_id)
-//     .bind(event_id)
-//     .fetch_all(pool)
-//     .await?;
-//
-//     let mut weighted_scores_sum: f64 = 0.0;
-//     let mut weighted_max_sum: f64 = 0.0;
-//
-//     for score in scores.iter() {
-//         weighted_scores_sum += score.weighted_score.round_to_two_decimals();
-//         weighted_max_sum += score.weighted_max.round_to_two_decimals();
-//     }
-//
-//     let final_score = ((weighted_scores_sum / weighted_max_sum) * 100.0) as f32;
-//
-//     Ok(final_score)
-// }
 
 #[derive(Debug, Deserialize, FromRow)]
 pub struct CriteriaIdName {
@@ -408,7 +417,6 @@ struct Candidate {
     pub candidate_number: i32,
 }
 
-// TODO: Change formula
 pub async fn generate_score_spreadsheet(
     State(pool): State<PgPool>,
 ) -> Result<(http::StatusCode, Vec<u8>), AppError> {
@@ -470,59 +478,89 @@ pub async fn generate_score_spreadsheet(
         .fetch_all(&pool)
         .await?;
 
-        // Write judge names
-        for (i, (_, judge_name)) in judges.iter().enumerate() {
-            // Set column width should only be done once
-            worksheet.set_column_width(i as u16 + 2, 30)?;
-            worksheet.write_with_format(1 + row_offset, i as u16 + 2, judge_name, &bold_format)?;
+        // Please improve this
+        if category.name.trim() == "Final Top 10 Candidates" {
+            worksheet.write_with_format(row_offset + 1, 2, "Final Score", &bold_format)?;
+
+            // Write final scores
+            write_top_ten(&pool, worksheet, row_offset + 2, 0).await?;
+
+            row_offset += 15;
+
+            worksheet.merge_range(
+                row_offset,
+                0,
+                row_offset,
+                6,
+                "Final Scores",
+                &heading_format,
+            )?;
+
+            worksheet.write_with_format(1 + row_offset, 0, "Candidate #", &bold_format)?;
+            worksheet.write_with_format(1 + row_offset, 1, "Name", &bold_format)?;
+            worksheet.write_with_format(1 + row_offset, 2, "Final Score", &bold_format)?;
+
+            write_by_rank(&pool, worksheet, row_offset + 2, 0).await?;
+        } else {
+            // Write judge names
+            for (i, (_, judge_name)) in judges.iter().enumerate() {
+                // Set column width should only be done once
+                worksheet.set_column_width(i as u16 + 2, 30)?;
+                worksheet.write_with_format(
+                    1 + row_offset,
+                    i as u16 + 2,
+                    judge_name,
+                    &bold_format,
+                )?;
+            }
+
+            worksheet.set_column_width(judges.len() as u16 + 2, 20)?;
+            worksheet.set_column_width(judges.len() as u16 + 3, 30)?;
+
+            worksheet.write_with_format(
+                1 + row_offset,
+                judges.len() as u16 + 2,
+                "Total Score",
+                &bold_format,
+            )?;
+
+            worksheet.write_with_format(
+                1 + row_offset,
+                judges.len() as u16 + 3,
+                format!("Weighted Score ({:.0}%)", category.weight * 100.0),
+                &bold_format,
+            )?;
+
+            worksheet.write(row_offset + 2, 0, "MALE")?;
+
+            // Write scores for male candidates
+            write_scores(
+                &pool,
+                worksheet,
+                &male_candidates,
+                category,
+                &judges,
+                3 + row_offset,
+                0,
+            )
+            .await?;
+
+            worksheet.write(row_offset + 3 + male_candidates.len() as u32, 0, "FEMALE")?;
+
+            // Write scores for female candidates
+            write_scores(
+                &pool,
+                worksheet,
+                &female_candidates,
+                category,
+                &judges,
+                row_offset + 4 + male_candidates.len() as u32,
+                0,
+            )
+            .await?;
+
+            row_offset += candidates.len() as u32 + 5;
         }
-
-        worksheet.set_column_width(judges.len() as u16 + 2, 20)?;
-        worksheet.set_column_width(judges.len() as u16 + 3, 30)?;
-
-        worksheet.write_with_format(
-            1 + row_offset,
-            judges.len() as u16 + 2,
-            "Total Score",
-            &bold_format,
-        )?;
-
-        worksheet.write_with_format(
-            1 + row_offset,
-            judges.len() as u16 + 3,
-            format!("Weighted Score ({}%)", category.weight * 100.0),
-            &bold_format,
-        )?;
-
-        worksheet.write(row_offset + 2, 0, "MALE")?;
-
-        // Write scores for male candidates
-        write_scores(
-            &pool,
-            worksheet,
-            &male_candidates,
-            category,
-            &judges,
-            3 + row_offset,
-            0,
-        )
-        .await?;
-
-        worksheet.write(row_offset + 3 + male_candidates.len() as u32, 0, "FEMALE")?;
-
-        // Write scores for female candidates
-        write_scores(
-            &pool,
-            worksheet,
-            &female_candidates,
-            category,
-            &judges,
-            row_offset + 4 + male_candidates.len() as u32,
-            0,
-        )
-        .await?;
-
-        row_offset += candidates.len() as u32 + 5;
     }
 
     let workbook_buffer = workbook.save_to_buffer()?;
@@ -553,7 +591,9 @@ async fn write_scores(
             1 + col,
             format!(
                 "{}, {} {}",
-                candidate.last_name, candidate.first_name, candidate.middle_name
+                candidate.last_name.trim(),
+                candidate.first_name.trim(),
+                candidate.middle_name.trim()
             ),
         )?;
 
@@ -561,12 +601,10 @@ async fn write_scores(
 
         // Write candidate scores
         for (judge_idx, (judge_id, _)) in judges.iter().enumerate() {
-            // Could be improved
-            // Use SQL to get the sum instead
             let judge_total_score: i64 = sqlx::query_scalar(
                 r#"
                 SELECT COALESCE(SUM(score), 0) as judge_total_score 
-                FROM scores 
+                FROM scores
                 WHERE candidate_id = ($1) AND category_id = ($2) AND judge_id = ($3)
                 "#,
             )
@@ -603,6 +641,180 @@ async fn write_scores(
     Ok(())
 }
 
+// OPTIMIZATION: Do not repeat this huge query since it's already been used like three times
+// already on other functions here
+async fn write_top_ten(
+    pool: &PgPool,
+    worksheet: &mut Worksheet,
+    row: RowNum,
+    col: ColNum,
+) -> Result<(), AppError> {
+    let final_scores = get_candidate_final_scores2(State(pool.to_owned())).await?;
+    let candidates = sqlx::query_as::<_, (String, i32, i32, f32)>(
+        r#"
+        (SELECT CONCAT(last_name, ', ', first_name, ' ', middle_name), candidate_number, gender, final_score
+        FROM candidates
+        WHERE gender = 1
+        ORDER BY final_score DESC
+        LIMIT 5)
+
+        UNION ALL
+
+        (SELECT CONCAT(last_name, ', ', first_name, ' ', middle_name), candidate_number, gender, final_score
+        FROM candidates
+        WHERE gender = 0
+        ORDER BY final_score DESC
+        LIMIT 5)
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let (male_candidates, female_candidates): (
+        Vec<(String, i32, i32, f32)>,
+        Vec<(String, i32, i32, f32)>,
+    ) = candidates
+        .into_iter()
+        .partition(|(_, _, gender, _)| gender.to_owned() == 1);
+
+    worksheet.write(row, 0, "MALE")?;
+
+    for (candidate_idx, (candidate_name, candidate_number, gender, final_score)) in
+        male_candidates.iter().enumerate()
+    {
+        worksheet.write(
+            row + 1 + candidate_idx as u32,
+            col,
+            candidate_number.to_owned(),
+        )?;
+        worksheet.write(row + 1 + candidate_idx as u32, col + 1, candidate_name)?;
+        worksheet.write(
+            row + 1 + candidate_idx as u32,
+            col + 2,
+            format!("{:.2}", final_score),
+        )?;
+    }
+
+    worksheet.write(row + 6, 0, "FEMALE")?;
+
+    for (candidate_idx, (candidate_name, candidate_number, gender, final_score)) in
+        female_candidates.iter().enumerate()
+    {
+        worksheet.write(
+            row + 7 + candidate_idx as u32,
+            col,
+            candidate_number.to_owned(),
+        )?;
+        worksheet.write(row + 7 + candidate_idx as u32, col + 1, candidate_name)?;
+        worksheet.write(
+            row + 7 + candidate_idx as u32,
+            col + 2,
+            format!("{:.2}", final_score),
+        )?;
+    }
+
+    Ok(())
+}
+
+async fn write_by_rank(
+    pool: &PgPool,
+    worksheet: &mut Worksheet,
+    row: RowNum,
+    col: ColNum,
+) -> Result<(), AppError> {
+    let res = sqlx::query_as::<_, CandidateScore>(
+        r#"
+        SELECT 
+            c.id AS candidate_id,
+            c.candidate_number,
+            c.first_name,
+            c.middle_name,
+            c.last_name,
+            c.gender,
+            COALESCE(SUM(s.score), 0) AS total_score, 
+            COALESCE(SUM(s.max), 0) AS total_max,
+            COALESCE(SUM(s.score), 0) * cat.weight AS weighted_score,
+            COALESCE(SUM(s.max), 0) * cat.weight AS weighted_max
+        FROM 
+            candidates c
+        LEFT JOIN 
+            scores s ON s.candidate_id = c.id
+        LEFT JOIN 
+            categories cat ON s.category_id = cat.id
+        GROUP BY
+            c.id, cat.weight
+        ORDER BY 
+            c.candidate_number, c.gender
+        "#,
+    )
+    .fetch_all(pool)
+    .await;
+
+    match res {
+        Ok(candidates) => {
+            let (male_candidates, female_candidates): (Vec<CandidateScore>, Vec<CandidateScore>) =
+                candidates
+                    .into_iter()
+                    .partition(|candidate| candidate.gender == 1);
+
+            let male_final_scores = calculate_final_scores(&male_candidates, true);
+            worksheet.write(row, 0, "MALE")?;
+
+            for (
+                candidate_idx,
+                (candidate_id, (candidate_number, _, candidate_name, final_score)),
+            ) in male_final_scores.iter().enumerate()
+            {
+                worksheet.write(
+                    row + 1 + candidate_idx as u32,
+                    col,
+                    candidate_number.to_owned(),
+                )?;
+                worksheet.write(row + 1 + candidate_idx as u32, col + 1, candidate_name)?;
+                worksheet.write(
+                    row + 1 + candidate_idx as u32,
+                    col + 2,
+                    format!("{:.2}", final_score),
+                )?;
+            }
+
+            let female_final_scores = calculate_final_scores(&female_candidates, true);
+            worksheet.write(row + 1 + male_final_scores.len() as u32, 0, "FEMALE")?;
+
+            for (
+                candidate_idx,
+                (candidate_id, (candidate_number, _, candidate_name, final_score)),
+            ) in female_final_scores.iter().enumerate()
+            {
+                worksheet.write(
+                    row + 2 + candidate_idx as u32 + male_final_scores.len() as u32,
+                    col,
+                    candidate_number.to_owned(),
+                )?;
+                worksheet.write(
+                    row + 2 + candidate_idx as u32 + male_final_scores.len() as u32,
+                    col + 1,
+                    candidate_name,
+                )?;
+                worksheet.write(
+                    row + 2 + candidate_idx as u32 + male_final_scores.len() as u32,
+                    col + 2,
+                    format!("{:.2}", final_score),
+                )?;
+            }
+
+            Ok(())
+        }
+        Err(err) => {
+            eprintln!("Failed to get candidates when computing scores: {err:?}");
+
+            Err(AppError::new(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get candidate scores: {}", err),
+            ))
+        }
+    }
+}
 // OLD CODE
 // FOR GENERATING CSV SPREADSHEET
 
@@ -845,3 +1057,46 @@ pub async fn generate_csv(
 //             .context("Failed to write headers.")
 //             .unwrap();
 //     });
+//
+
+// DEPRECATED
+// Calculate the final score to send to the client
+// pub async fn get_candidate_final_score(
+//     pool: &PgPool,
+//     event_id: &uuid::Uuid,
+//     candidate_id: &uuid::Uuid,
+// ) -> Result<f32, AppError> {
+//     let scores = sqlx::query_as::<_, ScoreMax>(
+//         r#"
+//         SELECT
+//             COALESCE(SUM(s.score), 0) AS total_score,
+//             COALESCE(SUM(s.max), 0) AS total_max,
+//             COALESCE(SUM(s.score), 0) * cat.weight AS weighted_score,
+//             COALESCE(SUM(s.max), 0) * cat.weight AS weighted_max
+//         FROM
+//             categories cat
+//         LEFT JOIN
+//             scores s ON s.category_id = cat.id AND s.candidate_id = ($1)
+//         WHERE
+//             cat.event_id = ($2)
+//         GROUP BY
+//             cat.id, cat.weight
+//         "#,
+//     )
+//     .bind(candidate_id)
+//     .bind(event_id)
+//     .fetch_all(pool)
+//     .await?;
+//
+//     let mut weighted_scores_sum: f64 = 0.0;
+//     let mut weighted_max_sum: f64 = 0.0;
+//
+//     for score in scores.iter() {
+//         weighted_scores_sum += score.weighted_score.round_to_two_decimals();
+//         weighted_max_sum += score.weighted_max.round_to_two_decimals();
+//     }
+//
+//     let final_score = ((weighted_scores_sum / weighted_max_sum) * 100.0) as f32;
+//
+//     Ok(final_score)
+// }

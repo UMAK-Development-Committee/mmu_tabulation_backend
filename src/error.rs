@@ -50,19 +50,6 @@ impl From<anyhow::Error> for AppError {
     }
 }
 
-// impl IntoResponse for XlsxError {
-//     fn into_response(self) -> Response {
-//         println!("->> {:?}\n", self);
-//
-//         // You might want to customize this part based on how you want to handle XlsxError in responses
-//         (
-//             http::StatusCode::INTERNAL_SERVER_ERROR,
-//             format!("XlsxError: {}", self),
-//         )
-//             .into_response()
-//     }
-// }
-
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         println!("->> {self:?}\n");
