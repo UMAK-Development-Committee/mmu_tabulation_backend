@@ -121,7 +121,7 @@ pub async fn get_candidate_scores(
     State(pool): State<PgPool>,
     query: Option<Query<ScoreParam>>,
 ) -> Result<axum::Json<Vec<Score>>, AppError> {
-    let res = match query {
+    let scores = match query {
         Some(param) => {
             sqlx::query_as::<_, Score>(
                 "SELECT * FROM scores WHERE criteria_id = ($1) or category_id = ($2)",
@@ -129,22 +129,16 @@ pub async fn get_candidate_scores(
             .bind(&param.criteria_id)
             .bind(&param.category_id)
             .fetch_all(&pool)
-            .await
+            .await?
         }
         None => {
             sqlx::query_as::<_, Score>("SELECT * FROM scores")
                 .fetch_all(&pool)
-                .await
+                .await?
         }
     };
 
-    match res {
-        Ok(scores) => Ok(axum::Json(scores)),
-        Err(err) => Err(AppError::new(
-            http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get candidate scores: {}", err),
-        )),
-    }
+    Ok(axum::Json(scores))
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,14 +184,6 @@ pub struct FinalScoreParam {
     event_id: uuid::Uuid,
 }
 
-// #[derive(Debug, Deserialize, FromRow)]
-// pub struct Candidate {
-//     id: uuid::Uuid,
-//     first_name: String,
-//     middle_name: String,
-//     last_name: String,
-// }
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CandidateFinalScore {
     candidate_id: uuid::Uuid,
@@ -232,17 +218,15 @@ pub struct CandidateScore {
 
 // It works but it might be inefficient
 // Immediately gets the final score of all candidates
-// TODO: Calculate score for all events
 pub async fn get_candidate_final_scores(
     State(pool): State<PgPool>,
 ) -> Result<axum::Json<Vec<CandidateFinalScore2>>, AppError> {
-    let final_scores = get_candidate_final_scores2(State(pool)).await?;
+    let final_scores = fetch_final_scores(State(pool)).await?;
 
     Ok(axum::Json(final_scores))
 }
 
-// Give this a better name
-pub async fn get_candidate_final_scores2(
+pub async fn fetch_final_scores(
     State(pool): State<PgPool>,
     // Query(query): Query<FinalScoreParam>,
 ) -> Result<Vec<CandidateFinalScore2>, AppError> {
@@ -279,19 +263,20 @@ pub async fn get_candidate_final_scores2(
     .fetch_all(&pool)
     .await;
 
+    let mut txn = pool.begin().await?;
+
     match res {
         Ok(candidates) => {
             let mut candidate_final_scores: Vec<CandidateFinalScore2> = Vec::new();
-            let final_scores = calculate_final_scores(&candidates, true);
+            let final_scores = calculate_final_scores(&candidates);
 
             for (candidate_id, (candidate_number, gender, candidate_name, final_score)) in
                 final_scores
             {
-                // Use a transaction instead
-                sqlx::query("UPDATE candidates SET final_score = ($1) WHERE id = ($2)")
+                sqlx::query("UPDATE candidates SET final_score = ($1) WHERE id = ($2) AND final_score <> ($1)")
                     .bind(final_score)
                     .bind(candidate_id)
-                    .execute(&pool)
+                    .execute(&mut *txn)
                     .await?;
 
                 println!(
@@ -306,6 +291,8 @@ pub async fn get_candidate_final_scores2(
                     final_score,
                 });
             }
+
+            txn.commit().await?;
 
             Ok(candidate_final_scores)
         }
@@ -323,7 +310,6 @@ pub async fn get_candidate_final_scores2(
 // Tuples here could be structs
 fn calculate_final_scores(
     scores: &Vec<CandidateScore>,
-    sort: bool,
 ) -> Vec<(uuid::Uuid, (i32, i32, String, f32))> {
     let mut candidate_scores: HashMap<uuid::Uuid, (i32, i32, String, f32, f32)> = HashMap::new();
 
@@ -367,10 +353,8 @@ fn calculate_final_scores(
 
     let mut sorted_final_scores: Vec<_> = final_scores.clone().into_iter().collect();
 
-    if sort {
-        // Sory by candidate number because it gets messed up
-        sorted_final_scores.sort_by(|(_, (a, _, _, _)), (_, (b, _, _, _))| a.cmp(b));
-    }
+    // Sory by candidate number because it gets messed up
+    sorted_final_scores.sort_by(|(_, (a, _, _, _)), (_, (b, _, _, _))| a.cmp(b));
 
     sorted_final_scores
 }
@@ -417,6 +401,9 @@ struct Candidate {
     pub candidate_number: i32,
 }
 
+// The rest of the functions below are for writing the results in a spreadsheet file
+// It's a mess
+
 pub async fn generate_score_spreadsheet(
     State(pool): State<PgPool>,
 ) -> Result<(http::StatusCode, Vec<u8>), AppError> {
@@ -428,7 +415,8 @@ pub async fn generate_score_spreadsheet(
     let worksheet = workbook.add_worksheet();
 
     let heading_format = Format::new().set_font_size(13.5).set_bold();
-    let bold_format = Format::new().set_bold().set_align(FormatAlign::Center);
+    let bold_format = Format::new().set_bold();
+    let bold_center_format = Format::new().set_bold().set_align(FormatAlign::Center);
 
     worksheet.set_column_width(0, 15)?;
     worksheet.set_column_width(1, 30)?;
@@ -464,8 +452,8 @@ pub async fn generate_score_spreadsheet(
             &heading_format,
         )?;
 
-        worksheet.write_with_format(1 + row_offset, 0, "Candidate #", &bold_format)?;
-        worksheet.write_with_format(1 + row_offset, 1, "Name", &bold_format)?;
+        worksheet.write_with_format(1 + row_offset, 0, "Candidate #", &bold_center_format)?;
+        worksheet.write_with_format(1 + row_offset, 1, "Name", &bold_center_format)?;
 
         // Could be improved, it's not necessary to fetch the same judges on the same
         // event_id
@@ -480,7 +468,7 @@ pub async fn generate_score_spreadsheet(
 
         // Please improve this
         if category.name.trim() == "Final Top 10 Candidates" {
-            worksheet.write_with_format(row_offset + 1, 2, "Final Score", &bold_format)?;
+            worksheet.write_with_format(row_offset + 1, 2, "Final Score", &bold_center_format)?;
 
             // Write final scores
             write_top_ten(&pool, worksheet, row_offset + 2, 0).await?;
@@ -496,9 +484,9 @@ pub async fn generate_score_spreadsheet(
                 &heading_format,
             )?;
 
-            worksheet.write_with_format(1 + row_offset, 0, "Candidate #", &bold_format)?;
-            worksheet.write_with_format(1 + row_offset, 1, "Name", &bold_format)?;
-            worksheet.write_with_format(1 + row_offset, 2, "Final Score", &bold_format)?;
+            worksheet.write_with_format(1 + row_offset, 0, "Candidate #", &bold_center_format)?;
+            worksheet.write_with_format(1 + row_offset, 1, "Name", &bold_center_format)?;
+            worksheet.write_with_format(1 + row_offset, 2, "Final Score", &bold_center_format)?;
 
             write_by_rank(&pool, worksheet, row_offset + 2, 0).await?;
         } else {
@@ -510,7 +498,7 @@ pub async fn generate_score_spreadsheet(
                     1 + row_offset,
                     i as u16 + 2,
                     judge_name,
-                    &bold_format,
+                    &bold_center_format,
                 )?;
             }
 
@@ -521,14 +509,14 @@ pub async fn generate_score_spreadsheet(
                 1 + row_offset,
                 judges.len() as u16 + 2,
                 "Total Score",
-                &bold_format,
+                &bold_center_format,
             )?;
 
             worksheet.write_with_format(
                 1 + row_offset,
                 judges.len() as u16 + 3,
                 format!("Weighted Score ({:.0}%)", category.weight * 100.0),
-                &bold_format,
+                &bold_center_format,
             )?;
 
             worksheet.write(row_offset + 2, 0, "MALE")?;
@@ -542,6 +530,7 @@ pub async fn generate_score_spreadsheet(
                 &judges,
                 3 + row_offset,
                 0,
+                Some(&bold_format),
             )
             .await?;
 
@@ -556,6 +545,7 @@ pub async fn generate_score_spreadsheet(
                 &judges,
                 row_offset + 4 + male_candidates.len() as u32,
                 0,
+                Some(&bold_format),
             )
             .await?;
 
@@ -576,7 +566,15 @@ async fn write_scores(
     judges: &Vec<(uuid::Uuid, String)>,
     row: RowNum,
     col: ColNum,
+    format: Option<&Format>,
 ) -> Result<(), AppError> {
+    let mut highest_swimwear: f32 = 0.0;
+    let mut highest_collegiate: f32 = 0.0;
+    let mut highest_formal: f32 = 0.0;
+    let mut swimwear_row: u32 = 0;
+    let mut collegiate_row: u32 = 0;
+    let mut formal_row: u32 = 0;
+
     for (candidate_idx, candidate) in candidates.iter().enumerate() {
         // Write candidate numbers
         worksheet.write(
@@ -625,6 +623,28 @@ async fn write_scores(
 
         let score_in_percentage: f32 = total_score * category.weight;
 
+        match category.name.trim() {
+            "University Collegiate Costume" => {
+                if score_in_percentage > highest_collegiate {
+                    highest_collegiate = score_in_percentage;
+                    collegiate_row = row + candidate_idx as u32;
+                }
+            }
+            "Swimwear" => {
+                if score_in_percentage > highest_swimwear {
+                    highest_swimwear = score_in_percentage;
+                    swimwear_row = row + candidate_idx as u32;
+                }
+            }
+            "Formal Wear and Long Gown" => {
+                if score_in_percentage > highest_formal {
+                    highest_formal = score_in_percentage;
+                    formal_row = row + candidate_idx as u32;
+                }
+            }
+            _ => {}
+        }
+
         worksheet.write(
             row + candidate_idx as u32,
             col + 2 + judges.len() as u16,
@@ -638,6 +658,10 @@ async fn write_scores(
         )?;
     }
 
+    worksheet.set_row_format(collegiate_row, format.unwrap());
+    worksheet.set_row_format(swimwear_row, format.unwrap());
+    worksheet.set_row_format(formal_row, format.unwrap());
+
     Ok(())
 }
 
@@ -649,7 +673,7 @@ async fn write_top_ten(
     row: RowNum,
     col: ColNum,
 ) -> Result<(), AppError> {
-    let final_scores = get_candidate_final_scores2(State(pool.to_owned())).await?;
+    let final_scores = fetch_final_scores(State(pool.to_owned())).await?;
     let candidates = sqlx::query_as::<_, (String, i32, i32, f32)>(
         r#"
         (SELECT CONCAT(last_name, ', ', first_name, ' ', middle_name), candidate_number, gender, final_score
@@ -691,7 +715,7 @@ async fn write_top_ten(
         worksheet.write(
             row + 1 + candidate_idx as u32,
             col + 2,
-            format!("{:.2}", final_score),
+            format!("{:.3}", final_score),
         )?;
     }
 
@@ -709,7 +733,7 @@ async fn write_top_ten(
         worksheet.write(
             row + 7 + candidate_idx as u32,
             col + 2,
-            format!("{:.2}", final_score),
+            format!("{:.3}", final_score),
         )?;
     }
 
@@ -757,7 +781,7 @@ async fn write_by_rank(
                     .into_iter()
                     .partition(|candidate| candidate.gender == 1);
 
-            let male_final_scores = calculate_final_scores(&male_candidates, true);
+            let male_final_scores = calculate_final_scores(&male_candidates);
             worksheet.write(row, 0, "MALE")?;
 
             for (
@@ -778,7 +802,7 @@ async fn write_by_rank(
                 )?;
             }
 
-            let female_final_scores = calculate_final_scores(&female_candidates, true);
+            let female_final_scores = calculate_final_scores(&female_candidates);
             worksheet.write(row + 1 + male_final_scores.len() as u32, 0, "FEMALE")?;
 
             for (
@@ -922,7 +946,7 @@ pub async fn generate_csv(
 //     let worksheet = workbook.add_worksheet();
 //
 //     let heading_format = Format::new().set_font_size(13.5).set_bold();
-//     let bold_format = Format::new().set_bold().set_align(FormatAlign::Center);
+//     let bold_center_format = Format::new().set_bold().set_align(FormatAlign::Center);
 //     let mut row_offset: u32 = 0;
 //
 //     worksheet.set_column_width(0, 15)?;
@@ -973,7 +997,7 @@ pub async fn generate_csv(
 //                 row_offset + 2 + category_idx as u32,
 //                 0,
 //                 category_name,
-//                 &bold_format,
+//                 &bold_center_format,
 //             );
 //
 //             let criterias = sqlx::query_as::<_, (uuid::Uuid, String, i32)>(
@@ -997,7 +1021,7 @@ pub async fn generate_csv(
 //                 //         1 + row_offset,
 //                 //         2 + judge_idx as u16,
 //                 //         &judge.judge_name,
-//                 //         &bold_format,
+//                 //         &bold_center_format,
 //                 //     )?;
 //                 // }
 //             }
