@@ -198,7 +198,9 @@ pub struct CandidateFinalScore {
 pub struct CandidateFinalScore2 {
     candidate_id: uuid::Uuid,
     candidate_number: i32,
-    candidate_name: String,
+    first_name: String,
+    middle_name: String,
+    last_name: String,
     gender: i32,
     final_score: f32,
 }
@@ -271,8 +273,10 @@ pub async fn fetch_final_scores(
             let mut candidate_final_scores: Vec<CandidateFinalScore2> = Vec::new();
             let final_scores = calculate_final_scores(&candidates);
 
-            for (candidate_id, (candidate_number, gender, candidate_name, final_score)) in
-                final_scores
+            for (
+                candidate_id,
+                (candidate_number, gender, first_name, middle_name, last_name, final_score),
+            ) in final_scores
             {
                 sqlx::query("UPDATE candidates SET final_score = ($1) WHERE id = ($2) AND final_score <> ($1)")
                     .bind(final_score)
@@ -282,13 +286,15 @@ pub async fn fetch_final_scores(
 
                 println!(
                     "Candidate #: {}, Candidate Name: {}, Final Score: {}",
-                    candidate_number, candidate_name, final_score
+                    candidate_number, last_name, final_score
                 );
 
                 candidate_final_scores.push(CandidateFinalScore2 {
                     candidate_id,
                     candidate_number,
-                    candidate_name,
+                    first_name,
+                    middle_name,
+                    last_name,
                     gender,
                     final_score,
                 });
@@ -312,51 +318,68 @@ pub async fn fetch_final_scores(
 // Tuples here could be structs
 fn calculate_final_scores(
     scores: &Vec<CandidateScore>,
-) -> Vec<(uuid::Uuid, (i32, i32, String, f32))> {
-    let mut candidate_scores: HashMap<uuid::Uuid, (i32, i32, String, f32, f32)> = HashMap::new();
+) -> Vec<(uuid::Uuid, (i32, i32, String, String, String, f32))> {
+    let mut candidate_scores: HashMap<uuid::Uuid, (i32, i32, String, String, String, f32, f32)> =
+        HashMap::new();
 
     for score in scores {
-        let candidate_name = format!(
-            "{}, {} {}",
-            score.last_name.trim(),
-            score.first_name.trim(),
-            score.middle_name.trim()
-        )
-        .trim()
-        .to_string();
-
-        let (candidate_number, gender, candidate_name, weighted_scores_sum, weighted_max_sum) =
-            candidate_scores.entry(score.candidate_id).or_insert((
-                score.candidate_number,
-                score.gender,
-                candidate_name,
-                0.0,
-                0.0,
-            ));
+        let (
+            candidate_number,
+            gender,
+            first_name,
+            middle_name,
+            last_name,
+            weighted_scores_sum,
+            weighted_max_sum,
+        ) = candidate_scores.entry(score.candidate_id).or_insert((
+            score.candidate_number,
+            score.gender,
+            score.first_name.clone(),
+            score.middle_name.clone(),
+            score.last_name.clone(),
+            0.0,
+            0.0,
+        ));
 
         *weighted_scores_sum += score.weighted_score.round_to_two_decimals() as f32;
         *weighted_max_sum += score.weighted_max.round_to_two_decimals() as f32;
     }
 
     // Very bad code (I think) xD
-    let mut final_scores: HashMap<uuid::Uuid, (i32, i32, String, f32)> = HashMap::new();
+    let mut final_scores: HashMap<uuid::Uuid, (i32, i32, String, String, String, f32)> =
+        HashMap::new();
 
     for (
         candidate_id,
-        (candidate_number, gender, candidate_name, weighted_scores_sum, weighted_max_sum),
+        (
+            candidate_number,
+            gender,
+            first_name,
+            middle_name,
+            last_name,
+            weighted_scores_sum,
+            weighted_max_sum,
+        ),
     ) in candidate_scores.into_iter()
     {
         let final_score = (weighted_scores_sum / weighted_max_sum) * 100.0;
         final_scores.insert(
             candidate_id,
-            (candidate_number, gender, candidate_name, final_score),
+            (
+                candidate_number,
+                gender,
+                first_name,
+                middle_name,
+                last_name,
+                final_score,
+            ),
         );
     }
 
     let mut sorted_final_scores: Vec<_> = final_scores.clone().into_iter().collect();
 
     // Sory by candidate number because it gets messed up
-    sorted_final_scores.sort_by(|(_, (a, _, _, _)), (_, (b, _, _, _))| a.cmp(b));
+    sorted_final_scores.sort_by(|(_, (a, _, _, _, _, _)), (_, (b, _, _, _, _, _))| a.cmp(b));
 
     sorted_final_scores
 }
@@ -799,9 +822,14 @@ async fn write_by_rank(
 
             for (
                 candidate_idx,
-                (candidate_id, (candidate_number, _, candidate_name, final_score)),
+                (
+                    candidate_id,
+                    (candidate_number, _, first_name, middle_name, last_name, final_score),
+                ),
             ) in male_final_scores.iter().enumerate()
             {
+                let candidate_name = format!("{}, {} {}", first_name, middle_name, last_name);
+
                 worksheet.write(
                     row + 1 + candidate_idx as u32,
                     col,
@@ -820,9 +848,14 @@ async fn write_by_rank(
 
             for (
                 candidate_idx,
-                (candidate_id, (candidate_number, _, candidate_name, final_score)),
+                (
+                    candidate_id,
+                    (candidate_number, _, first_name, middle_name, last_name, final_score),
+                ),
             ) in female_final_scores.iter().enumerate()
             {
+                let candidate_name = format!("{}, {} {}", first_name, middle_name, last_name);
+
                 worksheet.write(
                     row + 2 + candidate_idx as u32 + male_final_scores.len() as u32,
                     col,
