@@ -177,12 +177,12 @@ pub async fn get_candidate_score(
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct FinalScoreParam {
-    // candidate_id: uuid::Uuid,
-    // category_id: uuid::Uuid,
-    event_id: uuid::Uuid,
-}
+// #[derive(Debug, Deserialize)]
+// pub struct FinalScoreParam {
+//     // candidate_id: uuid::Uuid,
+//     // category_id: uuid::Uuid,
+//     event_id: uuid::Uuid,
+// }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CandidateFinalScore {
@@ -199,6 +199,7 @@ pub struct CandidateFinalScore2 {
     candidate_id: uuid::Uuid,
     candidate_number: i32,
     candidate_name: String,
+    gender: i32,
     final_score: f32,
 }
 
@@ -288,6 +289,7 @@ pub async fn fetch_final_scores(
                     candidate_id,
                     candidate_number,
                     candidate_name,
+                    gender,
                     final_score,
                 });
             }
@@ -407,9 +409,20 @@ struct Candidate {
 pub async fn generate_score_spreadsheet(
     State(pool): State<PgPool>,
 ) -> Result<(http::StatusCode, Vec<u8>), AppError> {
-    let categories = sqlx::query_as::<_, Category>("SELECT * FROM categories")
-        .fetch_all(&pool)
-        .await?;
+    let categories = sqlx::query_as::<_, Category>(
+        r#"
+        SELECT *
+        FROM categories
+        ORDER BY 
+            CASE 
+                WHEN name = 'Final Top 10 Candidates' THEN 1 
+                ELSE 0 
+            END, 
+            name
+    "#,
+    )
+    .fetch_all(&pool)
+    .await?;
 
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
